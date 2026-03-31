@@ -21,6 +21,33 @@ class InputMessage {
   factory InputMessage.keyCode(String code) =>
       InputMessage._({'type': 'key', 'code': code});
 
+  factory InputMessage.tapHere() =>
+      InputMessage._({'type': 'tap'});
+
+  factory InputMessage.rightClickHere() =>
+      InputMessage._({'type': 'rightclick'});
+
+  factory InputMessage.move(double dx, double dy) =>
+      InputMessage._({'type': 'move', 'dx': dx, 'dy': dy});
+
+  factory InputMessage.dragDelta(double dx, double dy, String phase) =>
+      InputMessage._({'type': 'drag', 'dx': dx, 'dy': dy, 'phase': phase});
+
+  factory InputMessage.scrollAt(double x, double y, double dx, double dy) =>
+      InputMessage._({'type': 'scroll', 'x': x, 'y': y, 'dx': dx, 'dy': dy});
+
+  factory InputMessage.scroll(double dx, double dy) =>
+      InputMessage._({'type': 'scroll', 'dx': dx, 'dy': dy});
+
+  factory InputMessage.pinchAt(double x, double y, double scale) =>
+      InputMessage._({'type': 'pinch', 'x': x, 'y': y, 'scale': scale});
+
+  factory InputMessage.pinch(double scale) =>
+      InputMessage._({'type': 'pinch', 'scale': scale});
+
+  factory InputMessage.keyWithModifiers(String code, List<String> modifiers) =>
+      InputMessage._({'type': 'key', 'code': code, 'modifiers': modifiers});
+
   String toJson() => jsonEncode(_data);
 }
 
