@@ -2,14 +2,10 @@ import Foundation
 import CoreGraphics
 
 class InputInjector {
-    private let displayID: CGDirectDisplayID
-    private let displayWidth: Int
-    private let displayHeight: Int
+    private let layout: DisplayLayoutManager
 
-    init(displayID: CGDirectDisplayID, width: Int, height: Int) {
-        self.displayID = displayID
-        self.displayWidth = width
-        self.displayHeight = height
+    init(layout: DisplayLayoutManager) {
+        self.layout = layout
     }
 
     func handleInput(_ json: String) {
@@ -22,32 +18,60 @@ class InputInjector {
 
         switch type {
         case "tap":
-            guard let point = extractPoint(obj) else { return }
-            tap(at: point)
+            if let x = obj["x"] as? Double, let y = obj["y"] as? Double {
+                let point = layout.absoluteToGlobal(relX: x, relY: y)
+                tap(at: point)
+            } else {
+                let point = layout.currentCursorPosition()
+                tap(at: point)
+            }
         case "rightclick":
-            guard let point = extractPoint(obj) else { return }
-            rightClick(at: point)
+            if let x = obj["x"] as? Double, let y = obj["y"] as? Double {
+                let point = layout.absoluteToGlobal(relX: x, relY: y)
+                rightClick(at: point)
+            } else {
+                let point = layout.currentCursorPosition()
+                rightClick(at: point)
+            }
+        case "move":
+            if let dx = obj["dx"] as? Double, let dy = obj["dy"] as? Double {
+                let point = layout.applyDelta(dx: dx, dy: dy)
+                moveMouse(to: point)
+            }
         case "drag":
-            guard let point = extractPoint(obj),
-                  let phase = obj["phase"] as? String else { return }
-            drag(at: point, phase: phase)
+            let phase = obj["phase"] as? String ?? "move"
+            if let x = obj["x"] as? Double, let y = obj["y"] as? Double {
+                let point = layout.absoluteToGlobal(relX: x, relY: y)
+                drag(at: point, phase: phase)
+            } else if let dx = obj["dx"] as? Double, let dy = obj["dy"] as? Double {
+                let point = layout.applyDelta(dx: dx, dy: dy)
+                drag(at: point, phase: phase)
+            }
+        case "scroll":
+            let dx = Int32(obj["dx"] as? Double ?? 0)
+            let dy = Int32(obj["dy"] as? Double ?? 0)
+            if let x = obj["x"] as? Double, let y = obj["y"] as? Double {
+                let point = layout.absoluteToGlobal(relX: x, relY: y)
+                moveMouse(to: point)
+            }
+            scroll(dx: dx, dy: dy)
+        case "pinch":
+            let scale = obj["scale"] as? Double ?? 1.0
+            if let x = obj["x"] as? Double, let y = obj["y"] as? Double {
+                let point = layout.absoluteToGlobal(relX: x, relY: y)
+                moveMouse(to: point)
+            }
+            pinchZoom(scale: scale)
         case "key":
+            let modifiers = obj["modifiers"] as? [String] ?? []
             if let text = obj["text"] as? String {
-                typeText(text)
+                typeText(text, modifiers: modifiers)
             } else if let code = obj["code"] as? String {
-                typeSpecialKey(code)
+                typeSpecialKey(code, modifiers: modifiers)
             }
         default:
             fputs("Unknown input type: \(type)\n", stderr)
         }
-    }
-
-    private func extractPoint(_ obj: [String: Any]) -> CGPoint? {
-        guard let x = obj["x"] as? Double,
-              let y = obj["y"] as? Double else { return nil }
-        let absX = x * Double(displayWidth)
-        let absY = y * Double(displayHeight)
-        return CGPoint(x: absX, y: absY)
     }
 
     private func tap(at point: CGPoint) {
@@ -88,13 +112,41 @@ class InputInjector {
         move?.post(tap: .cghidEventTap)
     }
 
-    private func typeText(_ text: String) {
+    private func scroll(dx: Int32, dy: Int32) {
+        let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)
+        event?.post(tap: .cghidEventTap)
+    }
+
+    private func pinchZoom(scale: Double) {
+        let dy = scale > 1.0 ? Int32(3) : Int32(-3)
+        let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0)
+        event?.flags = .maskCommand
+        event?.post(tap: .cghidEventTap)
+    }
+
+    private func buildModifierFlags(_ modifiers: [String]) -> CGEventFlags {
+        var flags = CGEventFlags()
+        for mod in modifiers {
+            switch mod {
+            case "cmd": flags.insert(.maskCommand)
+            case "ctrl": flags.insert(.maskControl)
+            case "alt": flags.insert(.maskAlternate)
+            case "shift": flags.insert(.maskShift)
+            default: break
+            }
+        }
+        return flags
+    }
+
+    private func typeText(_ text: String, modifiers: [String] = []) {
+        let flags = buildModifierFlags(modifiers)
         for char in text {
             let str = String(char)
             let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
             if let event = event {
                 let utf16 = Array(str.utf16)
                 event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+                if !flags.isEmpty { event.flags = flags }
                 event.post(tap: .cghidEventTap)
             }
             let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
@@ -102,7 +154,7 @@ class InputInjector {
         }
     }
 
-    private func typeSpecialKey(_ code: String) {
+    private func typeSpecialKey(_ code: String, modifiers: [String] = []) {
         let keyCode: CGKeyCode
         switch code {
         case "enter": keyCode = 36
@@ -115,12 +167,24 @@ class InputInjector {
         case "left": keyCode = 123
         case "right": keyCode = 124
         case "space": keyCode = 49
+        case "a": keyCode = 0
+        case "c": keyCode = 8
+        case "v": keyCode = 9
+        case "x": keyCode = 7
+        case "z": keyCode = 6
+        case "s": keyCode = 1
+        case "f": keyCode = 3
         default:
             fputs("Unknown key code: \(code)\n", stderr)
             return
         }
+        let flags = buildModifierFlags(modifiers)
         let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)
         let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
+        if !flags.isEmpty {
+            down?.flags = flags
+            up?.flags = flags
+        }
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
     }
