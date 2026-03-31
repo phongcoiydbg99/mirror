@@ -29,8 +29,9 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         let filter = SCContentFilter(display: targetDisplay, excludingWindows: [])
 
         let config = SCStreamConfiguration()
-        config.width = targetDisplay.width
-        config.height = targetDisplay.height
+        // Capture at half resolution for smaller frames and better performance
+        config.width = targetDisplay.width / 2
+        config.height = targetDisplay.height / 2
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = true

@@ -122,16 +122,17 @@ export async function startMirror({ width, height, landscape, mode = "virtual" }
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // 8. Adaptive quality
+  // 8. Adaptive quality — cap at 0.5 for smaller frames and better FPS
   let lastBufferSize = 0;
-  let currentQuality = 0.7;
+  let currentQuality = 0.4;
+  captureProc.stdin.write(`quality:${currentQuality}\n`);
   setInterval(() => {
     const bufSize = captureProc.stdout.readableLength;
     if (bufSize > lastBufferSize + 100000) {
       currentQuality = Math.max(0.2, currentQuality - 0.1);
       captureProc.stdin.write(`quality:${currentQuality}\n`);
-    } else if (bufSize < 10000 && currentQuality < 0.9) {
-      currentQuality = Math.min(0.9, currentQuality + 0.05);
+    } else if (bufSize < 10000 && currentQuality < 0.5) {
+      currentQuality = Math.min(0.5, currentQuality + 0.05);
       captureProc.stdin.write(`quality:${currentQuality}\n`);
     }
     lastBufferSize = bufSize;
