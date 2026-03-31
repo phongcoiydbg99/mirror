@@ -12,6 +12,7 @@ const CLIENT_HTML = path.join(__dirname, "..", "client", "index.html");
 export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", onInput = null }) {
   const boundary = "mjpeg-boundary";
   const clients = new Set();
+  const videoClients = new Set();
   let lastChunk = null;
 
   // Parse MJPEG stream: accumulate data, split on boundary, extract JPEG
@@ -22,11 +23,9 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
 
   // Log FPS every 5 seconds
   setInterval(() => {
-    if (frameCount > 0) {
-      const fps = (frameCount / 5).toFixed(1);
-      console.log(`[fps] ${fps} fps, frame size: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, video clients: ${videoClients.size}`);
-      frameCount = 0;
-    }
+    const fps = (frameCount / 5).toFixed(1);
+    console.log(`[fps] ${fps} fps, frame size: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, video ws: ${videoClients.size}, stream: ${clients.size}`);
+    frameCount = 0;
   }, 5000);
 
   mjpegInput.on("data", (chunk) => {
@@ -168,7 +167,6 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   });
 
   // WebSocket server for video frames
-  const videoClients = new Set();
   const wssVideo = new WebSocketServer({ noServer: true });
   wssVideo.on("connection", (ws, req) => {
     videoClients.add(ws);
