@@ -11,6 +11,7 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     private let fps: Int
     private var jpegQuality: Float = 0.7
     private let boundary = "mjpeg-boundary"
+    private let ciContext = CIContext()
 
     init(displayID: CGDirectDisplayID, fps: Int = 30) {
         self.displayID = displayID
@@ -74,7 +75,7 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext()
+        let context = ciContext
 
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         let options: [CIImageRepresentationOption: Any] = [

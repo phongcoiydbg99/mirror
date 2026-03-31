@@ -72,13 +72,15 @@ export function createMirrorServer({ mjpegInput, port = 8080 }) {
   };
 
   return new Promise((resolve, reject) => {
+    let currentPort = port;
     server.on("error", (err) => {
-      if (err.code === "EADDRINUSE" && port < 8100) {
-        server.listen(port + 1);
+      if (err.code === "EADDRINUSE" && currentPort < 8100) {
+        currentPort++;
+        server.listen(currentPort, "127.0.0.1");
       } else {
         reject(err);
       }
     });
-    server.listen(port, () => resolve(server));
+    server.listen(currentPort, "127.0.0.1", () => resolve(server));
   });
 }

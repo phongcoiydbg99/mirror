@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMirrorServer } from "./server.js";
-import { findIPhone } from "./usb.js";
+import { findIPhone, createTunnel } from "./usb.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -79,6 +79,16 @@ export async function startMirror({ width, height, landscape }) {
 
   const addr = server.address();
   console.log(`✔ Server running on port ${addr.port}`);
+
+  // Establish USB tunnel so iPhone can access the server
+  try {
+    await createTunnel(device.deviceID, addr.port);
+    console.log(`✔ USB tunnel established (port ${addr.port})`);
+  } catch (err) {
+    console.error(`✘ USB tunnel failed: ${err.message}`);
+    console.error("  iPhone may not be able to access the server.");
+  }
+
   console.log("");
   console.log(`Open Safari on iPhone → http://localhost:${addr.port}`);
   console.log("");
