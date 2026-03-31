@@ -52,6 +52,12 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
           : jpegData;
         if (trimmed.length > 0) {
           currentFrame = Buffer.from(trimmed);
+          // Push frame to WebSocket /video clients
+          for (const ws of videoClients) {
+            if (ws.readyState === 1) { // WebSocket.OPEN
+              ws.send(currentFrame, { binary: true });
+            }
+          }
         }
       }
 
@@ -137,7 +143,7 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   });
 
   // WebSocket server for input events
-  const wss = new WebSocketServer({ server, path: "/input" });
+  const wss = new WebSocketServer({ noServer: true });
   wss.on("connection", (ws, req) => {
     console.log(`[ws] input client connected from ${req.socket.remoteAddress}`);
     ws.on("close", () => console.log(`[ws] input client disconnected`));
@@ -150,6 +156,38 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
     });
   });
 
+  // WebSocket server for video frames
+  const videoClients = new Set();
+  const wssVideo = new WebSocketServer({ noServer: true });
+  wssVideo.on("connection", (ws, req) => {
+    videoClients.add(ws);
+    console.log(`[ws] video client connected from ${req.socket.remoteAddress} (total: ${videoClients.size})`);
+    // Send latest frame immediately
+    if (currentFrame) {
+      ws.send(currentFrame, { binary: true });
+    }
+    ws.on("close", () => {
+      videoClients.delete(ws);
+      console.log(`[ws] video client disconnected (total: ${videoClients.size})`);
+    });
+  });
+
+  // Route WebSocket upgrades by path
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = request.url.split("?")[0];
+    if (pathname === "/input") {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
+      });
+    } else if (pathname === "/video") {
+      wssVideo.handleUpgrade(request, socket, head, (ws) => {
+        wssVideo.emit("connection", ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
+
   // Track open sockets so server.close() can force-close them
   const sockets = new Set();
   server.on("connection", (socket) => {
@@ -160,6 +198,7 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   const origClose = server.close.bind(server);
   server.close = (cb) => {
     wss.close();
+    wssVideo.close();
     for (const socket of sockets) {
       socket.destroy();
     }
