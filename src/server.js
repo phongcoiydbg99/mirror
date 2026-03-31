@@ -24,7 +24,9 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }
   });
 
   const server = http.createServer((req, res) => {
-    if (req.url === "/" || req.url === "/index.html") {
+    const pathname = req.url.split("?")[0];
+
+    if (pathname === "/" || pathname === "/index.html") {
       let html;
       try {
         html = fs.readFileSync(CLIENT_HTML, "utf8");
@@ -37,7 +39,7 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }
       return;
     }
 
-    if (req.url === "/stream") {
+    if (pathname === "/stream") {
       res.writeHead(200, {
         "Content-Type": `multipart/x-mixed-replace; boundary=${boundary}`,
         "Cache-Control": "no-cache",
