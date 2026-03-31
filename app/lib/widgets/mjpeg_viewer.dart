@@ -52,14 +52,25 @@ class _MjpegViewerState extends State<MjpegViewer> {
           .timeout(const Duration(seconds: 5));
       debugPrint('[mjpeg] WebSocket connected');
 
+      DateTime lastFpsLog = DateTime.now();
+      int fpsCounter = 0;
+
       _socket!.listen(
         (data) {
           if (_disposed) return;
           if (data is List<int>) {
             _frameCount++;
-            if (_frameCount <= 3) {
-              debugPrint('[mjpeg] frame #$_frameCount size=${data.length}');
+            fpsCounter++;
+
+            // Log FPS every 5 seconds
+            final now = DateTime.now();
+            if (now.difference(lastFpsLog).inSeconds >= 5) {
+              final fps = (fpsCounter / now.difference(lastFpsLog).inMilliseconds * 1000).toStringAsFixed(1);
+              debugPrint('[mjpeg] receiving $fps fps, frame size: ${(data.length / 1024).toStringAsFixed(0)}KB');
+              fpsCounter = 0;
+              lastFpsLog = now;
             }
+
             if (mounted) {
               setState(() {
                 _currentFrame = Uint8List.fromList(data);

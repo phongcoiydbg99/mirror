@@ -18,6 +18,16 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   let currentFrame = null;
   let streamBuffer = Buffer.alloc(0);
   const boundaryMarker = Buffer.from(`--${boundary}`);
+  let frameCount = 0;
+
+  // Log FPS every 5 seconds
+  setInterval(() => {
+    if (frameCount > 0) {
+      const fps = (frameCount / 5).toFixed(1);
+      console.log(`[fps] ${fps} fps, frame size: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, video clients: ${videoClients.size}`);
+      frameCount = 0;
+    }
+  }, 5000);
 
   mjpegInput.on("data", (chunk) => {
     lastChunk = chunk;
@@ -52,6 +62,7 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
           : jpegData;
         if (trimmed.length > 0) {
           currentFrame = Buffer.from(trimmed);
+          frameCount++;
           // Push frame to WebSocket /video clients
           for (const ws of videoClients) {
             if (ws.readyState === 1) { // WebSocket.OPEN
