@@ -43,10 +43,9 @@ class _MjpegViewerState extends State<MjpegViewer> {
       _socket = await Socket.connect(uri.host, uri.port,
           timeout: const Duration(seconds: 5));
 
-      // Send raw HTTP GET request
-      _socket!.write('GET ${uri.path} HTTP/1.1\r\n'
+      // Send HTTP/1.0 request to avoid chunked transfer encoding
+      _socket!.write('GET ${uri.path} HTTP/1.0\r\n'
           'Host: ${uri.host}:${uri.port}\r\n'
-          'Connection: keep-alive\r\n'
           '\r\n');
 
       debugPrint('[mjpeg] socket connected to ${uri.host}:${uri.port}');
