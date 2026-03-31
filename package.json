@@ -1,0 +1,21 @@
+{
+  "name": "mirror",
+  "version": "0.1.0",
+  "description": "Use iPhone as a second Mac display over USB",
+  "type": "module",
+  "bin": {
+    "mirror": "./bin/mirror.js"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:swift": "cd swift && swift build -c release",
+    "postinstall": "npm run build:swift"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
