@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMirrorServer } from "./server.js";
-import { findIPhone, createTunnel } from "./usb.js";
+import { findIPhone, findUsbNetworkIP } from "./usb.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -71,26 +71,27 @@ export async function startMirror({ width, height, landscape }) {
     }
   });
 
-  // 5. Start HTTP server with capture stdout as MJPEG input
+  // 5. Find USB network interface IP
+  const usbNet = findUsbNetworkIP();
+  if (!usbNet) {
+    console.error("✘ No USB network interface found (169.254.x.x).");
+    console.error("  Make sure iPhone is connected via USB and trusted.");
+    captureProc.kill("SIGTERM");
+    process.exit(1);
+  }
+  console.log(`✔ USB network: ${usbNet.ip} (${usbNet.iface})`);
+
+  // 6. Start HTTP server bound to USB network IP
   const server = await createMirrorServer({
     mjpegInput: captureProc.stdout,
     port: 8080,
+    host: usbNet.ip,
   });
 
   const addr = server.address();
-  console.log(`✔ Server running on port ${addr.port}`);
-
-  // Establish USB tunnel so iPhone can access the server
-  try {
-    await createTunnel(device.deviceID, addr.port);
-    console.log(`✔ USB tunnel established (port ${addr.port})`);
-  } catch (err) {
-    console.error(`✘ USB tunnel failed: ${err.message}`);
-    console.error("  iPhone may not be able to access the server.");
-  }
-
+  console.log(`✔ Server running on ${addr.address}:${addr.port}`);
   console.log("");
-  console.log(`Open Safari on iPhone → http://localhost:${addr.port}`);
+  console.log(`Open Safari on iPhone → http://${addr.address}:${addr.port}`);
   console.log("");
   console.log("Press Ctrl+C to stop");
 

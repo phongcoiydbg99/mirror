@@ -1,5 +1,6 @@
 import net from "node:net";
 import { Buffer } from "node:buffer";
+import os from "node:os";
 
 const USBMUXD_SOCKET = "/var/run/usbmuxd";
 
@@ -153,4 +154,18 @@ export async function findIPhone() {
     throw new Error("No iPhone detected. Connect via USB and try again.");
   }
   return devices[0];
+}
+
+// Find Mac's IP on the iPhone USB network interface (link-local 169.254.x.x)
+export function findUsbNetworkIP() {
+  const interfaces = os.networkInterfaces();
+
+  for (const [name, addrs] of Object.entries(interfaces)) {
+    for (const addr of addrs) {
+      if (addr.family === "IPv4" && !addr.internal && addr.address.startsWith("169.254.")) {
+        return { ip: addr.address, iface: name };
+      }
+    }
+  }
+  return null;
 }

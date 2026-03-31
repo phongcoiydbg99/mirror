@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_HTML = path.join(__dirname, "..", "client", "index.html");
 
-export function createMirrorServer({ mjpegInput, port = 8080 }) {
+export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }) {
   const boundary = "mjpeg-boundary";
   const clients = new Set();
   let lastChunk = null;
@@ -76,11 +76,11 @@ export function createMirrorServer({ mjpegInput, port = 8080 }) {
     server.on("error", (err) => {
       if (err.code === "EADDRINUSE" && currentPort < 8100) {
         currentPort++;
-        server.listen(currentPort, "127.0.0.1");
+        server.listen(currentPort, host);
       } else {
         reject(err);
       }
     });
-    server.listen(currentPort, "127.0.0.1", () => resolve(server));
+    server.listen(currentPort, host, () => resolve(server));
   });
 }
