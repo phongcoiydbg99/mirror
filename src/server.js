@@ -27,6 +27,8 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
 
   const server = http.createServer(async (req, res) => {
     const pathname = req.url.split("?")[0];
+    const clientIP = req.socket.remoteAddress;
+    console.log(`[http] ${req.method} ${pathname} from ${clientIP}`);
 
     if (pathname === "/" || pathname === "/index.html") {
       let html;
@@ -47,10 +49,14 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
         Connection: "keep-alive",
       });
       clients.add(res);
+      console.log(`[stream] client connected from ${clientIP} (total: ${clients.size})`);
       if (lastChunk) {
         res.write(lastChunk);
       }
-      req.on("close", () => clients.delete(res));
+      req.on("close", () => {
+        clients.delete(res);
+        console.log(`[stream] client disconnected from ${clientIP} (total: ${clients.size})`);
+      });
       return;
     }
 
@@ -74,7 +80,9 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
 
   // WebSocket server for input events
   const wss = new WebSocketServer({ server, path: "/input" });
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, req) => {
+    console.log(`[ws] input client connected from ${req.socket.remoteAddress}`);
+    ws.on("close", () => console.log(`[ws] input client disconnected`));
     ws.on("message", (data) => {
       const raw = data.toString();
       const msg = parseInputMessage(raw);
