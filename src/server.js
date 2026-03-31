@@ -14,11 +14,10 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   const clients = new Set();
   let lastChunk = null;
 
-  // Parse MJPEG stream into individual JPEG frames
+  // Parse MJPEG stream: accumulate data, split on boundary, extract JPEG
   let currentFrame = null;
-  const frameChunks = [];
-  let inFrame = false;
-  let prevByte = 0;
+  let streamBuffer = Buffer.alloc(0);
+  const boundaryMarker = Buffer.from(`--${boundary}`);
 
   mjpegInput.on("data", (chunk) => {
     lastChunk = chunk;
@@ -31,48 +30,42 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
       }
     }
 
-    // Parse frames for /frame endpoint — collect chunk slices, not byte-by-byte
-    let frameStart = -1;
-    for (let i = 0; i < chunk.length; i++) {
-      const byte = chunk[i];
+    // Accumulate for /frame endpoint
+    streamBuffer = Buffer.concat([streamBuffer, chunk]);
 
-      // Detect JPEG start: FF D8
-      if (prevByte === 0xff && byte === 0xd8 && !inFrame) {
-        frameChunks.length = 0;
-        frameChunks.push(Buffer.from([0xff, 0xd8]));
-        inFrame = true;
-        frameStart = i + 1; // next byte starts the body
-        prevByte = byte;
-        continue;
-      }
+    // Extract complete frames between boundaries
+    while (true) {
+      const bIdx = streamBuffer.indexOf(boundaryMarker);
+      if (bIdx === -1) break;
 
-      // Detect JPEG end: FF D9
-      if (inFrame && prevByte === 0xff && byte === 0xd9) {
-        // Push remaining slice up to and including this byte
-        if (frameStart >= 0 && frameStart <= i) {
-          frameChunks.push(chunk.subarray(frameStart, i + 1));
-        } else {
-          frameChunks.push(Buffer.from([byte]));
+      const nextBIdx = streamBuffer.indexOf(boundaryMarker, bIdx + boundaryMarker.length);
+      if (nextBIdx === -1) break; // wait for next boundary
+
+      // Between two boundaries: header + \r\n\r\n + JPEG data + \r\n
+      const segment = streamBuffer.subarray(bIdx, nextBIdx);
+      const headerEnd = segment.indexOf("\r\n\r\n");
+      if (headerEnd !== -1) {
+        const jpegData = segment.subarray(headerEnd + 4);
+        // Trim trailing \r\n
+        const trimmed = jpegData[jpegData.length - 1] === 0x0a && jpegData[jpegData.length - 2] === 0x0d
+          ? jpegData.subarray(0, jpegData.length - 2)
+          : jpegData;
+        if (trimmed.length > 0) {
+          currentFrame = Buffer.from(trimmed);
         }
-        currentFrame = Buffer.concat(frameChunks);
-        frameChunks.length = 0;
-        inFrame = false;
-        frameStart = -1;
-        prevByte = byte;
-        continue;
       }
 
-      prevByte = byte;
+      // Keep from second boundary onward
+      streamBuffer = streamBuffer.subarray(nextBIdx);
     }
 
-    // If still in frame, save remaining chunk slice
-    if (inFrame && frameStart >= 0 && frameStart < chunk.length) {
-      frameChunks.push(chunk.subarray(frameStart));
-    } else if (inFrame && frameStart === -1) {
-      // Entire chunk is mid-frame
-      frameChunks.push(chunk);
+    // Prevent buffer from growing too large
+    if (streamBuffer.length > 1024 * 1024) {
+      const lastBoundary = streamBuffer.lastIndexOf(boundaryMarker);
+      if (lastBoundary > 0) {
+        streamBuffer = streamBuffer.subarray(lastBoundary);
+      }
     }
-    frameStart = 0; // reset for next chunk
   });
 
   const server = http.createServer(async (req, res) => {
