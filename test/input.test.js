@@ -39,6 +39,42 @@ describe("parseInputMessage", () => {
   it("returns null for missing type", () => {
     expect(parseInputMessage('{"x":0.5}')).toBeNull();
   });
+
+  it("parses move message", () => {
+    const msg = '{"type":"move","dx":12.5,"dy":-8.0}';
+    const result = parseInputMessage(msg);
+    expect(result).toEqual({ type: "move", dx: 12.5, dy: -8.0 });
+  });
+
+  it("parses scroll message with position", () => {
+    const msg = '{"type":"scroll","x":0.5,"y":0.3,"dx":0,"dy":-3.5}';
+    const result = parseInputMessage(msg);
+    expect(result).toEqual({ type: "scroll", x: 0.5, y: 0.3, dx: 0, dy: -3.5 });
+  });
+
+  it("parses scroll message without position", () => {
+    const msg = '{"type":"scroll","dx":0,"dy":-3.5}';
+    const result = parseInputMessage(msg);
+    expect(result).toEqual({ type: "scroll", dx: 0, dy: -3.5 });
+  });
+
+  it("parses pinch message", () => {
+    const msg = '{"type":"pinch","x":0.5,"y":0.3,"scale":1.2}';
+    const result = parseInputMessage(msg);
+    expect(result).toEqual({ type: "pinch", x: 0.5, y: 0.3, scale: 1.2 });
+  });
+
+  it("parses key with modifiers", () => {
+    const msg = '{"type":"key","code":"c","modifiers":["cmd"]}';
+    const result = parseInputMessage(msg);
+    expect(result).toEqual({ type: "key", code: "c", modifiers: ["cmd"] });
+  });
+
+  it("parses tap without coordinates (unlocked mode)", () => {
+    const msg = '{"type":"tap"}';
+    const result = parseInputMessage(msg);
+    expect(result).toEqual({ type: "tap" });
+  });
 });
 
 describe("formatForSwift", () => {
