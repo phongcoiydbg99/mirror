@@ -68,7 +68,7 @@ class _DisplayScreenState extends State<DisplayScreen> with WidgetsBindingObserv
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          TouchOverlay(
+          AbsoluteTouchOverlay(
             inputService: cs.inputService,
             child: MjpegViewer(
               streamUrl: cs.streamUrl,
