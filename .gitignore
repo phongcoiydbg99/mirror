@@ -1,0 +1,7 @@
+node_modules/
+swift/.build/
+swift/.swiftpm/
+*.o
+*.d
+*.swiftdeps
+.DS_Store
