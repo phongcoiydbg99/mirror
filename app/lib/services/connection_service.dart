@@ -17,9 +17,9 @@ class ConnectionService {
 
   Future<bool> connect(String ip, int port) async {
     try {
-      final response = await http.get(
+      final response = await http.head(
         Uri.parse('http://$ip:$port/'),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 3));
 
       if (response.statusCode != 200) return false;
 
