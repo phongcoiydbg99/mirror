@@ -96,7 +96,41 @@ termSource.setEventHandler {
 }
 termSource.resume()
 
-fputs("Virtual display ready. Capture will start in Task 3.\n", stderr)
+// Start screen capture
+let capturer = ScreenCapturer(displayID: displayManager.displayID, fps: 30)
+
+// Print MJPEG boundary header for Node.js to parse
+fputs("boundary=mjpeg-boundary\n", stderr)
+
+// Quality controller listens on stdin
+let qualityController = QualityController(capturer: capturer)
+qualityController.startListening()
+
+Task {
+    do {
+        try await capturer.start()
+    } catch {
+        fputs("Capture error: \(error)\n", stderr)
+        displayManager.destroy()
+        Foundation.exit(1)
+    }
+}
+
+// Update signal handlers to also stop capture
+signalSource.setEventHandler {
+    Task {
+        await capturer.stop()
+        displayManager.destroy()
+        Foundation.exit(0)
+    }
+}
+termSource.setEventHandler {
+    Task {
+        await capturer.stop()
+        displayManager.destroy()
+        Foundation.exit(0)
+    }
+}
 
 // Keep process alive
 RunLoop.main.run()
