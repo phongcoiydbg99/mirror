@@ -8,6 +8,12 @@ let package = Package(
         .executableTarget(
             name: "MirrorCapture",
             path: "Sources/MirrorCapture",
+            cSettings: [
+                .headerSearchPath("include"),
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-import-objc-header", "Sources/MirrorCapture/include/CGVirtualDisplayPrivate.h"]),
+            ],
             linkerSettings: [
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("ScreenCaptureKit"),
