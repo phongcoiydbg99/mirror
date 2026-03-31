@@ -16,8 +16,9 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
 
   // Parse MJPEG stream into individual JPEG frames
   let currentFrame = null;
-  let frameBuffer = Buffer.alloc(0);
+  const frameChunks = [];
   let inFrame = false;
+  let prevByte = 0;
 
   mjpegInput.on("data", (chunk) => {
     lastChunk = chunk;
@@ -30,22 +31,48 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
       }
     }
 
-    // Also parse frames for /frame endpoint
+    // Parse frames for /frame endpoint — collect chunk slices, not byte-by-byte
+    let frameStart = -1;
     for (let i = 0; i < chunk.length; i++) {
-      if (i < chunk.length - 1 && chunk[i] === 0xff && chunk[i + 1] === 0xd8) {
-        frameBuffer = Buffer.from([0xff, 0xd8]);
+      const byte = chunk[i];
+
+      // Detect JPEG start: FF D8
+      if (prevByte === 0xff && byte === 0xd8 && !inFrame) {
+        frameChunks.length = 0;
+        frameChunks.push(Buffer.from([0xff, 0xd8]));
         inFrame = true;
-        i++; // skip 0xd8
+        frameStart = i + 1; // next byte starts the body
+        prevByte = byte;
         continue;
       }
-      if (inFrame) {
-        frameBuffer = Buffer.concat([frameBuffer, Buffer.from([chunk[i]])]);
-        if (i > 0 && chunk[i - 1] === 0xff && chunk[i] === 0xd9) {
-          currentFrame = frameBuffer;
-          inFrame = false;
+
+      // Detect JPEG end: FF D9
+      if (inFrame && prevByte === 0xff && byte === 0xd9) {
+        // Push remaining slice up to and including this byte
+        if (frameStart >= 0 && frameStart <= i) {
+          frameChunks.push(chunk.subarray(frameStart, i + 1));
+        } else {
+          frameChunks.push(Buffer.from([byte]));
         }
+        currentFrame = Buffer.concat(frameChunks);
+        frameChunks.length = 0;
+        inFrame = false;
+        frameStart = -1;
+        prevByte = byte;
+        continue;
       }
+
+      prevByte = byte;
     }
+
+    // If still in frame, save remaining chunk slice
+    if (inFrame && frameStart >= 0 && frameStart < chunk.length) {
+      frameChunks.push(chunk.subarray(frameStart));
+    } else if (inFrame && frameStart === -1) {
+      // Entire chunk is mid-frame
+      frameChunks.push(chunk);
+    }
+    frameStart = 0; // reset for next chunk
   });
 
   const server = http.createServer(async (req, res) => {
