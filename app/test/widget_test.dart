@@ -5,6 +5,6 @@ import 'package:app/main.dart';
 void main() {
   testWidgets('App renders', (WidgetTester tester) async {
     await tester.pumpWidget(const MirrorApp());
-    expect(find.text('Connect Screen — placeholder'), findsOneWidget);
+    expect(find.text('Mirror'), findsOneWidget);
   });
 }
