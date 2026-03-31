@@ -122,7 +122,8 @@ let capturer = ScreenCapturer(displayID: captureDisplayID, fps: 30)
 fputs("boundary=mjpeg-boundary\n", stderr)
 
 // Input injector
-let inputInjector = InputInjector(displayID: captureDisplayID, width: config.width, height: config.height)
+let displayLayout = DisplayLayoutManager(virtualDisplayID: captureDisplayID)
+let inputInjector = InputInjector(layout: displayLayout)
 
 // Stdin listener for quality + input commands
 let qualityController = QualityController(capturer: capturer)

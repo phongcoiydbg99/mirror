@@ -9,6 +9,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   String _quality = 'medium';
+  double _sensitivity = 1.5;
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +30,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (v) {
                 if (v != null) setState(() => _quality = v);
               },
+            ),
+          ),
+          const Divider(),
+          ListTile(
+            title: const Text('Trackpad Sensitivity'),
+            subtitle: Text('${_sensitivity.toStringAsFixed(1)}x'),
+            trailing: SizedBox(
+              width: 150,
+              child: Slider(
+                value: _sensitivity,
+                min: 1.0,
+                max: 3.0,
+                divisions: 4,
+                label: '${_sensitivity.toStringAsFixed(1)}x',
+                onChanged: (v) {
+                  setState(() => _sensitivity = v);
+                },
+              ),
             ),
           ),
         ],
