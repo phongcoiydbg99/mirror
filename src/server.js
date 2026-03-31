@@ -14,13 +14,36 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   const clients = new Set();
   let lastChunk = null;
 
+  // Parse MJPEG stream into individual JPEG frames
+  let currentFrame = null;
+  let frameBuffer = Buffer.alloc(0);
+  let inFrame = false;
+
   mjpegInput.on("data", (chunk) => {
     lastChunk = chunk;
+    // Forward raw stream to /stream clients
     for (const res of clients) {
       try {
         res.write(chunk);
       } catch {
         clients.delete(res);
+      }
+    }
+
+    // Also parse frames for /frame endpoint
+    for (let i = 0; i < chunk.length; i++) {
+      if (i < chunk.length - 1 && chunk[i] === 0xff && chunk[i + 1] === 0xd8) {
+        frameBuffer = Buffer.from([0xff, 0xd8]);
+        inFrame = true;
+        i++; // skip 0xd8
+        continue;
+      }
+      if (inFrame) {
+        frameBuffer = Buffer.concat([frameBuffer, Buffer.from([chunk[i]])]);
+        if (i > 0 && chunk[i - 1] === 0xff && chunk[i] === 0xd9) {
+          currentFrame = frameBuffer;
+          inFrame = false;
+        }
       }
     }
   });
@@ -57,6 +80,21 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
         clients.delete(res);
         console.log(`[stream] client disconnected from ${clientIP} (total: ${clients.size})`);
       });
+      return;
+    }
+
+    if (pathname === "/frame") {
+      if (currentFrame) {
+        res.writeHead(200, {
+          "Content-Type": "image/jpeg",
+          "Content-Length": currentFrame.length,
+          "Cache-Control": "no-cache",
+        });
+        res.end(currentFrame);
+      } else {
+        res.writeHead(204);
+        res.end();
+      }
       return;
     }
 
