@@ -64,9 +64,14 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         // Write MJPEG frame to stdout
         let header = "--\(boundary)\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpegData.count)\r\n\r\n"
         if let headerData = header.data(using: .utf8) {
-            FileHandle.standardOutput.write(headerData)
-            FileHandle.standardOutput.write(jpegData)
-            FileHandle.standardOutput.write(Data("\r\n".utf8))
+            // Combine into single write to avoid interleaving
+            var frame = Data()
+            frame.append(headerData)
+            frame.append(jpegData)
+            frame.append(Data("\r\n".utf8))
+            FileHandle.standardOutput.write(frame)
+            // Force flush to prevent pipe buffering
+            fflush(stdout)
         }
     }
 
