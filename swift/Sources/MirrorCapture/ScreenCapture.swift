@@ -94,17 +94,19 @@ class QualityController {
         self.capturer = capturer
     }
 
-    func startListening() {
+    func startListening(inputInjector: InputInjector? = nil) {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             while let line = readLine() {
                 guard let self = self else { break }
-                // Node.js sends "quality:<value>" via stdin
                 if line.hasPrefix("quality:") {
                     let valueStr = line.dropFirst("quality:".count)
                     if let value = Float(valueStr) {
                         self.capturer.setQuality(value)
                         fputs("Quality set to \(value)\n", stderr)
                     }
+                } else if line.hasPrefix("input:") {
+                    let json = String(line.dropFirst("input:".count))
+                    inputInjector?.handleInput(json)
                 }
             }
         }

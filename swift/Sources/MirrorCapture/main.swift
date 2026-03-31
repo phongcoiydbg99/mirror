@@ -2,7 +2,7 @@ import Foundation
 
 func printUsage() {
     fputs("""
-    Usage: MirrorCapture --width <W> --height <H> [--no-hidpi]
+    Usage: MirrorCapture --width <W> --height <H> [--no-hidpi] [--mode virtual|mirror]
 
     Creates a virtual display and captures its content as MJPEG to stdout.
 
@@ -10,16 +10,18 @@ func printUsage() {
       --width     Display width in pixels (required)
       --height    Display height in pixels (required)
       --no-hidpi  Disable HiDPI scaling
+      --mode      Display mode: 'virtual' (default) or 'mirror'
       --help      Show this help message
 
     """, stderr)
 }
 
-func parseArgs() -> (width: Int, height: Int, hiDPI: Bool)? {
+func parseArgs() -> (width: Int, height: Int, hiDPI: Bool, mode: String)? {
     let args = CommandLine.arguments
     var width: Int?
     var height: Int?
     var hiDPI = true
+    var mode = "virtual"
 
     var i = 1
     while i < args.count {
@@ -40,6 +42,13 @@ func parseArgs() -> (width: Int, height: Int, hiDPI: Bool)? {
             height = h
         case "--no-hidpi":
             hiDPI = false
+        case "--mode":
+            i += 1
+            guard i < args.count, ["virtual", "mirror"].contains(args[i]) else {
+                fputs("Error: --mode must be 'virtual' or 'mirror'\n", stderr)
+                return nil
+            }
+            mode = args[i]
         case "--help":
             printUsage()
             Foundation.exit(0)
@@ -57,7 +66,7 @@ func parseArgs() -> (width: Int, height: Int, hiDPI: Bool)? {
         return nil
     }
 
-    return (w, h, hiDPI)
+    return (w, h, hiDPI, mode)
 }
 
 // Parse arguments
@@ -65,25 +74,35 @@ guard let config = parseArgs() else {
     Foundation.exit(1)
 }
 
-// Create virtual display
-let displayManager = VirtualDisplayManager(
-    width: config.width,
-    height: config.height,
-    hiDPI: config.hiDPI
-)
+var displayManager: VirtualDisplayManager? = nil
+var captureDisplayID: CGDirectDisplayID = 0
 
-do {
-    try displayManager.create()
-} catch {
-    fputs("Error: \(error)\n", stderr)
-    Foundation.exit(1)
+if config.mode == "virtual" {
+    // Create virtual display
+    let dm = VirtualDisplayManager(
+        width: config.width,
+        height: config.height,
+        hiDPI: config.hiDPI
+    )
+    do {
+        try dm.create()
+    } catch {
+        fputs("Error: \(error)\n", stderr)
+        Foundation.exit(1)
+    }
+    captureDisplayID = dm.displayID
+    displayManager = dm
+} else {
+    // Mirror mode — capture main display
+    captureDisplayID = CGMainDisplayID()
+    fputs("Mirror mode: capturing main display (ID: \(captureDisplayID))\n", stderr)
 }
 
 // Handle SIGINT/SIGTERM for cleanup
 let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 signal(SIGINT, SIG_IGN)
 signalSource.setEventHandler {
-    displayManager.destroy()
+    displayManager?.destroy()
     Foundation.exit(0)
 }
 signalSource.resume()
@@ -91,27 +110,30 @@ signalSource.resume()
 let termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 signal(SIGTERM, SIG_IGN)
 termSource.setEventHandler {
-    displayManager.destroy()
+    displayManager?.destroy()
     Foundation.exit(0)
 }
 termSource.resume()
 
 // Start screen capture
-let capturer = ScreenCapturer(displayID: displayManager.displayID, fps: 30)
+let capturer = ScreenCapturer(displayID: captureDisplayID, fps: 30)
 
 // Print MJPEG boundary header for Node.js to parse
 fputs("boundary=mjpeg-boundary\n", stderr)
 
-// Quality controller listens on stdin
+// Input injector
+let inputInjector = InputInjector(displayID: captureDisplayID, width: config.width, height: config.height)
+
+// Stdin listener for quality + input commands
 let qualityController = QualityController(capturer: capturer)
-qualityController.startListening()
+qualityController.startListening(inputInjector: inputInjector)
 
 Task {
     do {
         try await capturer.start()
     } catch {
         fputs("Capture error: \(error)\n", stderr)
-        displayManager.destroy()
+        displayManager?.destroy()
         Foundation.exit(1)
     }
 }
@@ -120,14 +142,14 @@ Task {
 signalSource.setEventHandler {
     Task {
         await capturer.stop()
-        displayManager.destroy()
+        displayManager?.destroy()
         Foundation.exit(0)
     }
 }
 termSource.setEventHandler {
     Task {
         await capturer.stop()
-        displayManager.destroy()
+        displayManager?.destroy()
         Foundation.exit(0)
     }
 }
