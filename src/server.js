@@ -2,16 +2,18 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
+import QRCode from "qrcode";
+import { parseInputMessage, formatForSwift } from "./input.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_HTML = path.join(__dirname, "..", "client", "index.html");
 
-export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }) {
+export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", onInput = null }) {
   const boundary = "mjpeg-boundary";
   const clients = new Set();
   let lastChunk = null;
 
-  // Forward MJPEG data to all connected clients
   mjpegInput.on("data", (chunk) => {
     lastChunk = chunk;
     for (const res of clients) {
@@ -23,7 +25,7 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }
     }
   });
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     const pathname = req.url.split("?")[0];
 
     if (pathname === "/" || pathname === "/index.html") {
@@ -31,7 +33,6 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }
       try {
         html = fs.readFileSync(CLIENT_HTML, "utf8");
       } catch {
-        // Fallback minimal HTML if file not found
         html = `<html><body><img src="/stream" style="width:100vw;height:100vh;object-fit:contain"></body></html>`;
       }
       res.writeHead(200, { "Content-Type": "text/html" });
@@ -46,7 +47,6 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }
         Connection: "keep-alive",
       });
       clients.add(res);
-      // Send the last chunk immediately so the client gets data right away
       if (lastChunk) {
         res.write(lastChunk);
       }
@@ -54,8 +54,34 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }
       return;
     }
 
+    if (pathname === "/qr") {
+      const addr = server.address();
+      const url = `mirror://${addr.address}:${addr.port}`;
+      try {
+        const png = await QRCode.toBuffer(url, { type: "png", width: 300 });
+        res.writeHead(200, { "Content-Type": "image/png" });
+        res.end(png);
+      } catch {
+        res.writeHead(500);
+        res.end("QR generation failed");
+      }
+      return;
+    }
+
     res.writeHead(404);
     res.end("Not found");
+  });
+
+  // WebSocket server for input events
+  const wss = new WebSocketServer({ server, path: "/input" });
+  wss.on("connection", (ws) => {
+    ws.on("message", (data) => {
+      const raw = data.toString();
+      const msg = parseInputMessage(raw);
+      if (msg && onInput) {
+        onInput(formatForSwift(msg));
+      }
+    });
   });
 
   // Track open sockets so server.close() can force-close them
@@ -67,6 +93,7 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0" }
 
   const origClose = server.close.bind(server);
   server.close = (cb) => {
+    wss.close();
     for (const socket of sockets) {
       socket.destroy();
     }
