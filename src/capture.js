@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { createMirrorServer } from "./server.js";
 import { findIPhone, findUsbNetworkIP } from "./usb.js";
+import qrcodeTerminal from "qrcode-terminal";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,40 +19,41 @@ export function getSwiftBinaryPath() {
   );
 }
 
-// Default iPhone 14 Pro resolution
 export function getDefaultResolution(landscape) {
   const w = 1170;
   const h = 2532;
   return landscape ? { width: h, height: w } : { width: w, height: h };
 }
 
-export async function startMirror({ width, height, landscape }) {
-  // 1. Detect iPhone
-  console.log("Detecting iPhone...");
-  let device;
-  try {
-    device = await findIPhone();
-    console.log(`✔ iPhone detected (Device ID: ${device.deviceID})`);
-  } catch (err) {
-    console.error(`✘ ${err.message}`);
-    process.exit(1);
+function getLocalIPs() {
+  const interfaces = os.networkInterfaces();
+  const ips = [];
+  for (const [name, addrs] of Object.entries(interfaces)) {
+    for (const addr of addrs) {
+      if (addr.family === "IPv4" && !addr.internal) {
+        ips.push({ ip: addr.address, iface: name });
+      }
+    }
   }
+  return ips;
+}
 
-  // 2. Resolve resolution
+export async function startMirror({ width, height, landscape, mode = "virtual" }) {
+  // 1. Resolve resolution
   const resolution =
     width && height ? { width, height } : getDefaultResolution(landscape);
   console.log(`✔ Resolution: ${resolution.width}x${resolution.height}`);
+  console.log(`✔ Mode: ${mode}`);
 
-  // 3. Build Swift binary if needed
+  // 2. Swift binary path
   const binaryPath = getSwiftBinaryPath();
 
-  // 4. Spawn Swift capture process
+  // 3. Spawn Swift capture process
   console.log("Starting screen capture...");
   const captureProc = spawn(binaryPath, [
-    "--width",
-    String(resolution.width),
-    "--height",
-    String(resolution.height),
+    "--width", String(resolution.width),
+    "--height", String(resolution.height),
+    "--mode", mode,
   ]);
 
   captureProc.stderr.on("data", (data) => {
@@ -71,31 +74,44 @@ export async function startMirror({ width, height, landscape }) {
     }
   });
 
-  // 5. Find USB network interface IP
+  // 4. Check USB network
   const usbNet = findUsbNetworkIP();
-  if (!usbNet) {
-    console.error("✘ No USB network interface found (169.254.x.x).");
-    console.error("  Make sure iPhone is connected via USB and trusted.");
-    captureProc.kill("SIGTERM");
-    process.exit(1);
+  if (usbNet) {
+    console.log(`✔ USB network: ${usbNet.ip} (${usbNet.iface})`);
   }
-  console.log(`✔ USB network: ${usbNet.ip} (${usbNet.iface})`);
 
-  // 6. Start HTTP server bound to USB network IP
+  // 5. Start HTTP + WebSocket server (bind to all interfaces for WiFi + USB)
   const server = await createMirrorServer({
     mjpegInput: captureProc.stdout,
     port: 8080,
-    host: usbNet.ip,
+    host: "0.0.0.0",
+    onInput: (stdinMsg) => {
+      captureProc.stdin.write(stdinMsg);
+    },
   });
 
   const addr = server.address();
-  console.log(`✔ Server running on ${addr.address}:${addr.port}`);
-  console.log("");
-  console.log(`Open Safari on iPhone → http://${addr.address}:${addr.port}`);
-  console.log("");
-  console.log("Press Ctrl+C to stop");
+  console.log(`✔ Server running on port ${addr.port}`);
 
-  // 6. Handle shutdown
+  // 6. Show connection info
+  const allIPs = getLocalIPs();
+  console.log("");
+  console.log("Connect from phone:");
+  for (const { ip, iface } of allIPs) {
+    console.log(`  http://${ip}:${addr.port}  (${iface})`);
+  }
+  console.log("");
+
+  // Print QR code in terminal
+  const connectURL = `mirror://${allIPs[0]?.ip || "localhost"}:${addr.port}`;
+  qrcodeTerminal.generate(connectURL, { small: true }, (qr) => {
+    console.log(qr);
+    console.log(`QR: ${connectURL}`);
+    console.log("");
+    console.log("Press Ctrl+C to stop");
+  });
+
+  // 7. Handle shutdown
   const shutdown = () => {
     console.log("\nShutting down...");
     captureProc.kill("SIGTERM");
@@ -106,17 +122,15 @@ export async function startMirror({ width, height, landscape }) {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // 7. Adaptive quality — monitor stdout buffer
+  // 8. Adaptive quality
   let lastBufferSize = 0;
   let currentQuality = 0.7;
   setInterval(() => {
     const bufSize = captureProc.stdout.readableLength;
     if (bufSize > lastBufferSize + 100000) {
-      // Buffer growing — reduce quality
       currentQuality = Math.max(0.2, currentQuality - 0.1);
       captureProc.stdin.write(`quality:${currentQuality}\n`);
     } else if (bufSize < 10000 && currentQuality < 0.9) {
-      // Buffer small — increase quality
       currentQuality = Math.min(0.9, currentQuality + 0.05);
       captureProc.stdin.write(`quality:${currentQuality}\n`);
     }

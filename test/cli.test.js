@@ -9,6 +9,7 @@ describe("parseArgs", () => {
       width: null,
       height: null,
       landscape: false,
+      mode: "virtual",
     });
   });
 
@@ -19,6 +20,7 @@ describe("parseArgs", () => {
       width: 1170,
       height: 2532,
       landscape: false,
+      mode: "virtual",
     });
   });
 
@@ -29,7 +31,24 @@ describe("parseArgs", () => {
       width: null,
       height: null,
       landscape: true,
+      mode: "virtual",
     });
+  });
+
+  it("parses start with mode flag", () => {
+    const result = parseArgs(["start", "--mode", "mirror"]);
+    expect(result).toEqual({
+      command: "start",
+      width: null,
+      height: null,
+      landscape: false,
+      mode: "mirror",
+    });
+  });
+
+  it("defaults mode to virtual", () => {
+    const result = parseArgs(["start"]);
+    expect(result.mode).toBe("virtual");
   });
 
   it("parses stop command", () => {

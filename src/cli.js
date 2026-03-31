@@ -12,6 +12,7 @@ export function parseArgs(args) {
       width: null,
       height: null,
       landscape: false,
+      mode: "virtual",
     };
 
     for (let i = 1; i < args.length; i++) {
@@ -26,6 +27,10 @@ export function parseArgs(args) {
           break;
         case "--landscape":
           result.landscape = true;
+          break;
+        case "--mode":
+          i++;
+          result.mode = args[i];
           break;
       }
     }
@@ -47,12 +52,12 @@ Commands:
     --width <px>     Display width (default: auto-detect)
     --height <px>    Display height (default: auto-detect)
     --landscape      Use landscape orientation
+    --mode <mode>    Display mode: virtual (default) or mirror
   stop               Stop mirror display
   status             Show current status`);
     process.exit(1);
   }
 
-  // Command dispatch — implemented in later tasks
   switch (parsed.command) {
     case "start": {
       const { startMirror } = await import("./capture.js");
