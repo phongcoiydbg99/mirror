@@ -23,6 +23,7 @@ class _MjpegViewerState extends State<MjpegViewer> {
   Uint8List? _currentFrame;
   StreamSubscription? _subscription;
   bool _disposed = false;
+  http.Client? _client;
 
   @override
   void initState() {
@@ -34,48 +35,52 @@ class _MjpegViewerState extends State<MjpegViewer> {
   void dispose() {
     _disposed = true;
     _subscription?.cancel();
+    _client?.close();
     super.dispose();
   }
 
   void _startStream() async {
     try {
       final request = http.Request('GET', Uri.parse(widget.streamUrl));
-      final client = http.Client();
-      final response = await client.send(request);
+      _client = http.Client();
+      final response = await _client!.send(request);
 
-      final buffer = BytesBuilder();
+      final buffer = BytesBuilder(copy: false);
       bool inImage = false;
+      int prevByte = 0;
 
       _subscription = response.stream.listen(
         (chunk) {
           if (_disposed) return;
 
           for (int i = 0; i < chunk.length; i++) {
-            buffer.addByte(chunk[i]);
-            final bytes = buffer.toBytes();
+            final byte = chunk[i];
 
-            if (bytes.length >= 2 &&
-                bytes[bytes.length - 2] == 0xFF &&
-                bytes[bytes.length - 1] == 0xD8 &&
-                !inImage) {
+            // Detect JPEG start: 0xFF 0xD8
+            if (prevByte == 0xFF && byte == 0xD8 && !inImage) {
               buffer.clear();
-              buffer.addByte(0xFF);
-              buffer.addByte(0xD8);
+              buffer.add([0xFF, 0xD8]);
               inImage = true;
+              prevByte = byte;
+              continue;
             }
 
-            if (inImage &&
-                bytes.length >= 2 &&
-                bytes[bytes.length - 2] == 0xFF &&
-                bytes[bytes.length - 1] == 0xD9) {
-              if (mounted && !_disposed) {
-                setState(() {
-                  _currentFrame = Uint8List.fromList(buffer.toBytes());
-                });
+            if (inImage) {
+              buffer.addByte(byte);
+
+              // Detect JPEG end: 0xFF 0xD9
+              if (prevByte == 0xFF && byte == 0xD9) {
+                if (mounted && !_disposed) {
+                  final frame = buffer.takeBytes();
+                  setState(() {
+                    _currentFrame = Uint8List.fromList(frame);
+                  });
+                }
+                inImage = false;
               }
-              buffer.clear();
-              inImage = false;
             }
+
+            prevByte = byte;
           }
         },
         onError: (_) {
