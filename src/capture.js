@@ -85,7 +85,11 @@ export async function startMirror({ width, height, landscape, mode = "virtual" }
     process.exit(1);
   });
 
-  captureProc.on("exit", (code) => {
+  captureProc.on("exit", (code, signal) => {
+    if (signal) {
+      console.error(`✘ Capture process killed by signal ${signal}`);
+      process.exit(1);
+    }
     if (code !== 0 && code !== null) {
       console.error(`✘ Capture process exited with code ${code}`);
       process.exit(1);
