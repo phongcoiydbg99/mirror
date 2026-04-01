@@ -39,8 +39,12 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
       }
     }
 
-    // Accumulate for /frame endpoint
-    streamBuffer = Buffer.concat([streamBuffer, chunk]);
+    // Accumulate for frame parsing
+    if (streamBuffer.length === 0) {
+      streamBuffer = Buffer.from(chunk);
+    } else {
+      streamBuffer = Buffer.concat([streamBuffer, chunk]);
+    }
 
     // Extract complete frames between boundaries
     while (true) {
@@ -71,15 +75,18 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
         }
       }
 
-      // Keep from second boundary onward
-      streamBuffer = streamBuffer.subarray(nextBIdx);
+      // Keep from second boundary onward (copy to release old buffer)
+      streamBuffer = Buffer.from(streamBuffer.subarray(nextBIdx));
     }
 
-    // Prevent buffer from growing too large
-    if (streamBuffer.length > 1024 * 1024) {
+    // Prevent buffer from growing too large — trim aggressively
+    if (streamBuffer.length > 256 * 1024) {
       const lastBoundary = streamBuffer.lastIndexOf(boundaryMarker);
       if (lastBoundary > 0) {
-        streamBuffer = streamBuffer.subarray(lastBoundary);
+        streamBuffer = Buffer.from(streamBuffer.subarray(lastBoundary));
+      } else {
+        // No boundary found — discard everything
+        streamBuffer = Buffer.alloc(0);
       }
     }
   });
