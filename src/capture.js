@@ -72,6 +72,8 @@ export async function startMirror({ width, height, landscape, mode = "virtual" }
     "--tcp-port", String(framePort),
   ]);
 
+  captureProc.stdin.on("error", () => {}); // Ignore EPIPE when process exits
+
   captureProc.stderr.on("data", (data) => {
     const msg = data.toString().trim();
     if (msg) console.log(`  [capture] ${msg}`);
