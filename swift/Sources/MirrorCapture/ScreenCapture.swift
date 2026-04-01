@@ -12,13 +12,52 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     private var jpegQuality: Float = 0.7
     private let boundary = "mjpeg-boundary"
     private let ciContext = CIContext()
-    private var tcpSocket: OutputStream?
-    private let writeQueue = DispatchQueue(label: "frame-writer")
+    private var socketFD: Int32 = -1
 
     init(displayID: CGDirectDisplayID, fps: Int = 30) {
         self.displayID = displayID
         self.fps = fps
         super.init()
+    }
+
+    func connectTCP(port: Int) {
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            fputs("Failed to create socket\n", stderr)
+            return
+        }
+
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(port).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+
+        let result = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+
+        guard result == 0 else {
+            fputs("Failed to connect to 127.0.0.1:\(port)\n", stderr)
+            Darwin.close(fd)
+            return
+        }
+
+        // Set non-blocking mode
+        let flags = fcntl(fd, F_GETFL, 0)
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+
+        // Increase send buffer to 512KB
+        var bufSize: Int32 = 512 * 1024
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
+
+        // Disable Nagle's algorithm for low latency
+        var noDelay: Int32 = 1
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &noDelay, socklen_t(MemoryLayout<Int32>.size))
+
+        socketFD = fd
+        fputs("TCP connected to 127.0.0.1:\(port) (fd=\(fd), non-blocking, 512KB buffer)\n", stderr)
     }
 
     func start() async throws {
@@ -44,27 +83,16 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         try await stream.startCapture()
 
         self.stream = stream
-        fputs("Screen capture started: \(targetDisplay.width)x\(targetDisplay.height) @ \(fps)fps\n", stderr)
-    }
-
-    func connectTCP(port: Int) {
-        var readStream: Unmanaged<CFReadStream>?
-        var writeStream: Unmanaged<CFWriteStream>?
-        CFStreamCreatePairWithSocketToHost(nil, "127.0.0.1" as CFString, UInt32(port), &readStream, &writeStream)
-        if let cfStream = writeStream?.takeRetainedValue() {
-            let outputStream = cfStream as OutputStream
-            outputStream.open()
-            tcpSocket = outputStream
-            fputs("TCP connected to 127.0.0.1:\(port)\n", stderr)
-        } else {
-            fputs("Failed to connect TCP to port \(port)\n", stderr)
-        }
-        readStream?.release()
+        fputs("Screen capture started: \(config.width)x\(config.height) @ \(fps)fps\n", stderr)
     }
 
     func stop() async {
         try? await stream?.stopCapture()
         stream = nil
+        if socketFD >= 0 {
+            Darwin.close(socketFD)
+            socketFD = -1
+        }
         fputs("Screen capture stopped\n", stderr)
     }
 
@@ -86,29 +114,20 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         frame.append(jpegData)
         frame.append(Data("\r\n".utf8))
 
-        if let socket = tcpSocket {
-            // Drop frame if socket buffer is full — never block capture
-            guard socket.hasSpaceAvailable else { return }
-            writeQueue.async {
-                frame.withUnsafeBytes { ptr in
-                    if let base = ptr.baseAddress?.assumingMemoryBound(to: UInt8.self) {
-                        var written = 0
-                        while written < frame.count {
-                            // Check space before each chunk write
-                            guard socket.hasSpaceAvailable else { break }
-                            let result = socket.write(base.advanced(by: written), maxLength: min(frame.count - written, 32768))
-                            if result <= 0 { break }
-                            written += result
-                        }
-                    }
+        if socketFD >= 0 {
+            // Non-blocking write to TCP socket — never blocks, drops partial frames
+            frame.withUnsafeBytes { ptr in
+                guard let base = ptr.baseAddress else { return }
+                let result = Darwin.send(socketFD, base, frame.count, MSG_DONTWAIT)
+                // result < 0 means EAGAIN (buffer full) — frame dropped, that's OK
+                if result < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
+                    fputs("Socket write error: \(errno)\n", stderr)
                 }
             }
         } else {
             // Fallback to stdout
-            writeQueue.async {
-                FileHandle.standardOutput.write(frame)
-                fflush(stdout)
-            }
+            FileHandle.standardOutput.write(frame)
+            fflush(stdout)
         }
     }
 
@@ -117,14 +136,13 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = ciContext
 
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         let options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: jpegQuality
         ]
 
-        return context.jpegRepresentation(of: ciImage, colorSpace: colorSpace, options: options)
+        return ciContext.jpegRepresentation(of: ciImage, colorSpace: colorSpace, options: options)
     }
 }
 
