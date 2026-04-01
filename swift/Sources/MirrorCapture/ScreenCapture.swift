@@ -101,9 +101,30 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     }
 
     // SCStreamOutput delegate
+    private var captureFrameCount = 0
+    private var sendFrameCount = 0
+    private var dropFrameCount = 0
+    private var lastStatsTime = Date()
+
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen else { return }
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        captureFrameCount += 1
+
+        // Log stats every 5 seconds
+        let now = Date()
+        if now.timeIntervalSince(lastStatsTime) >= 5 {
+            let elapsed = now.timeIntervalSince(lastStatsTime)
+            let capFps = Double(captureFrameCount) / elapsed
+            let sendFps = Double(sendFrameCount) / elapsed
+            fputs("[swift] capture: \(String(format: "%.1f", capFps)) fps, sent: \(String(format: "%.1f", sendFps)) fps, dropped: \(dropFrameCount)\n", stderr)
+            captureFrameCount = 0
+            sendFrameCount = 0
+            dropFrameCount = 0
+            lastStatsTime = now
+        }
+
         guard let jpegData = encodeJPEG(pixelBuffer: imageBuffer) else { return }
 
         let header = "--\(boundary)\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpegData.count)\r\n\r\n"
@@ -119,8 +140,11 @@ class ScreenCapturer: NSObject, SCStreamOutput {
             frame.withUnsafeBytes { ptr in
                 guard let base = ptr.baseAddress else { return }
                 let result = Darwin.send(socketFD, base, frame.count, MSG_DONTWAIT)
-                // result < 0 means EAGAIN (buffer full) — frame dropped, that's OK
-                if result < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
+                if result > 0 {
+                    sendFrameCount += 1
+                } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                    dropFrameCount += 1
+                } else {
                     fputs("Socket write error: \(errno)\n", stderr)
                 }
             }
