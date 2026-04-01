@@ -13,6 +13,8 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     private let boundary = "mjpeg-boundary"
     private let ciContext = CIContext()
     private var socketFD: Int32 = -1
+    private var lastFrameData: Data?
+    private var repeatTimer: DispatchSourceTimer?
 
     init(displayID: CGDirectDisplayID, fps: Int = 30) {
         self.displayID = displayID
@@ -58,6 +60,23 @@ class ScreenCapturer: NSObject, SCStreamOutput {
 
         socketFD = fd
         fputs("TCP connected to 127.0.0.1:\(port) (fd=\(fd), non-blocking, 512KB buffer)\n", stderr)
+
+        // Start repeat timer — re-sends last frame every 100ms when ScreenCaptureKit is idle
+        startRepeatTimer()
+    }
+
+    private func startRepeatTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "frame-repeat"))
+        timer.schedule(deadline: .now() + 0.1, repeating: 0.1) // 10fps minimum
+        timer.setEventHandler { [weak self] in
+            guard let self = self, let frame = self.lastFrameData, self.socketFD >= 0 else { return }
+            frame.withUnsafeBytes { ptr in
+                guard let base = ptr.baseAddress else { return }
+                _ = Darwin.send(self.socketFD, base, frame.count, MSG_DONTWAIT)
+            }
+        }
+        timer.resume()
+        repeatTimer = timer
     }
 
     func start() async throws {
@@ -89,6 +108,8 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     func stop() async {
         try? await stream?.stopCapture()
         stream = nil
+        repeatTimer?.cancel()
+        repeatTimer = nil
         if socketFD >= 0 {
             Darwin.close(socketFD)
             socketFD = -1
@@ -134,6 +155,9 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         frame.append(headerData)
         frame.append(jpegData)
         frame.append(Data("\r\n".utf8))
+
+        // Save for repeat timer
+        lastFrameData = frame
 
         if socketFD >= 0 {
             // Non-blocking write to TCP socket — never blocks, drops partial frames
