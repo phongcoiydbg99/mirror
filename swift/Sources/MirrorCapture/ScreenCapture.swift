@@ -15,6 +15,8 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     private var socketFD: Int32 = -1
     private var lastFrameData: Data?
     private var repeatTimer: DispatchSourceTimer?
+    private let socketQueue = DispatchQueue(label: "socket-writer")
+    private var lastSendTime = Date.distantPast
 
     init(displayID: CGDirectDisplayID, fps: Int = 30) {
         self.displayID = displayID
@@ -66,14 +68,17 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     }
 
     private func startRepeatTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "frame-repeat"))
-        timer.schedule(deadline: .now() + 0.1, repeating: 0.1) // 10fps minimum
+        let timer = DispatchSource.makeTimerSource(queue: socketQueue)
+        timer.schedule(deadline: .now() + 0.1, repeating: 0.1)
         timer.setEventHandler { [weak self] in
             guard let self = self, let frame = self.lastFrameData, self.socketFD >= 0 else { return }
+            // Only re-send when capture is idle (no new frame for 100ms+)
+            guard Date().timeIntervalSince(self.lastSendTime) >= 0.1 else { return }
             frame.withUnsafeBytes { ptr in
                 guard let base = ptr.baseAddress else { return }
                 _ = Darwin.send(self.socketFD, base, frame.count, MSG_DONTWAIT)
             }
+            self.lastSendTime = Date()
         }
         timer.resume()
         repeatTimer = timer
@@ -156,26 +161,28 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         frame.append(jpegData)
         frame.append(Data("\r\n".utf8))
 
-        // Save for repeat timer
-        lastFrameData = frame
+        // Dispatch to serial queue for thread-safe access to lastFrameData and socketFD
+        socketQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.lastFrameData = frame
+            self.lastSendTime = Date()
 
-        if socketFD >= 0 {
-            // Non-blocking write to TCP socket — never blocks, drops partial frames
-            frame.withUnsafeBytes { ptr in
-                guard let base = ptr.baseAddress else { return }
-                let result = Darwin.send(socketFD, base, frame.count, MSG_DONTWAIT)
-                if result > 0 {
-                    sendFrameCount += 1
-                } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                    dropFrameCount += 1
-                } else {
-                    fputs("Socket write error: \(errno)\n", stderr)
+            if self.socketFD >= 0 {
+                frame.withUnsafeBytes { ptr in
+                    guard let base = ptr.baseAddress else { return }
+                    let result = Darwin.send(self.socketFD, base, frame.count, MSG_DONTWAIT)
+                    if result > 0 {
+                        self.sendFrameCount += 1
+                    } else if errno == EAGAIN || errno == EWOULDBLOCK {
+                        self.dropFrameCount += 1
+                    } else {
+                        fputs("Socket write error: \(errno)\n", stderr)
+                    }
                 }
+            } else {
+                FileHandle.standardOutput.write(frame)
+                fflush(stdout)
             }
-        } else {
-            // Fallback to stdout
-            FileHandle.standardOutput.write(frame)
-            fflush(stdout)
         }
     }
 
