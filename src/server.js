@@ -20,6 +20,7 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   let frameCount = 0;
   let pending = Buffer.alloc(0); // small leftover between chunks
   let expectedLen = -1; // bytes remaining for current frame body
+  let lastDataTime = Date.now();
 
   // Log FPS every 5 seconds
   setInterval(() => {
@@ -38,6 +39,14 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
         clients.delete(res);
       }
     }
+
+    // Reset parser if stale (no data for 3+ seconds means capture paused)
+    const now = Date.now();
+    if (now - lastDataTime > 3000) {
+      pending = Buffer.alloc(0);
+      expectedLen = -1;
+    }
+    lastDataTime = now;
 
     // Append to pending
     pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
