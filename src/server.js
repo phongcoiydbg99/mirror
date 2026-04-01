@@ -15,22 +15,22 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   const videoClients = new Set();
   let lastChunk = null;
 
-  // Parse MJPEG stream: accumulate data, split on boundary, extract JPEG
+  // Parse MJPEG frames using Content-Length header — no growing buffer
   let currentFrame = null;
-  let streamBuffer = Buffer.alloc(0);
-  const boundaryMarker = Buffer.from(`--${boundary}`);
   let frameCount = 0;
+  let pending = Buffer.alloc(0); // small leftover between chunks
+  let expectedLen = -1; // bytes remaining for current frame body
 
   // Log FPS every 5 seconds
   setInterval(() => {
     const fps = (frameCount / 5).toFixed(1);
-    console.log(`[fps] ${fps} fps, frame size: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, video ws: ${videoClients.size}, stream: ${clients.size}`);
+    console.log(`[fps] ${fps} fps, frame size: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, video ws: ${videoClients.size}, stream: ${clients.size}, buf: ${pending.length}`);
     frameCount = 0;
   }, 5000);
 
   mjpegInput.on("data", (chunk) => {
     lastChunk = chunk;
-    // Forward raw stream to /stream clients
+    // Forward raw stream to /stream clients (Safari MJPEG)
     for (const res of clients) {
       try {
         res.write(chunk);
@@ -39,55 +39,63 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
       }
     }
 
-    // Accumulate for frame parsing
-    if (streamBuffer.length === 0) {
-      streamBuffer = Buffer.from(chunk);
-    } else {
-      streamBuffer = Buffer.concat([streamBuffer, chunk]);
-    }
+    // Append to pending
+    pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
 
-    // Extract complete frames between boundaries
-    while (true) {
-      const bIdx = streamBuffer.indexOf(boundaryMarker);
-      if (bIdx === -1) break;
+    // Parse frames
+    while (pending.length > 0) {
+      if (expectedLen === -1) {
+        // Looking for header: --boundary\r\n...Content-Length: N\r\n\r\n
+        const headerEnd = pending.indexOf("\r\n\r\n");
+        if (headerEnd === -1) break; // incomplete header, wait for more data
 
-      const nextBIdx = streamBuffer.indexOf(boundaryMarker, bIdx + boundaryMarker.length);
-      if (nextBIdx === -1) break; // wait for next boundary
-
-      // Between two boundaries: header + \r\n\r\n + JPEG data + \r\n
-      const segment = streamBuffer.subarray(bIdx, nextBIdx);
-      const headerEnd = segment.indexOf("\r\n\r\n");
-      if (headerEnd !== -1) {
-        const jpegData = segment.subarray(headerEnd + 4);
-        // Trim trailing \r\n
-        const trimmed = jpegData[jpegData.length - 1] === 0x0a && jpegData[jpegData.length - 2] === 0x0d
-          ? jpegData.subarray(0, jpegData.length - 2)
-          : jpegData;
-        if (trimmed.length > 0) {
-          currentFrame = Buffer.from(trimmed);
-          frameCount++;
-          // Push frame to WebSocket /video clients
-          for (const ws of videoClients) {
-            if (ws.readyState === 1) { // WebSocket.OPEN
-              ws.send(currentFrame, { binary: true });
-            }
+        const headerStr = pending.subarray(0, headerEnd).toString();
+        const match = headerStr.match(/Content-Length:\s*(\d+)/i);
+        if (match) {
+          expectedLen = parseInt(match[1], 10);
+          pending = pending.subarray(headerEnd + 4);
+        } else {
+          // No Content-Length — skip to next boundary
+          const nextBoundary = pending.indexOf("--" + boundary, 1);
+          if (nextBoundary > 0) {
+            pending = pending.subarray(nextBoundary);
+          } else {
+            pending = Buffer.alloc(0);
           }
+          break;
         }
       }
 
-      // Keep from second boundary onward (copy to release old buffer)
-      streamBuffer = Buffer.from(streamBuffer.subarray(nextBIdx));
+      if (expectedLen > 0) {
+        if (pending.length >= expectedLen) {
+          // Complete frame
+          currentFrame = Buffer.from(pending.subarray(0, expectedLen));
+          frameCount++;
+
+          // Push to WebSocket /video clients
+          for (const ws of videoClients) {
+            if (ws.readyState === 1) {
+              ws.send(currentFrame, { binary: true });
+            }
+          }
+
+          // Skip frame data + trailing \r\n
+          let skip = expectedLen;
+          if (pending.length > skip + 1 && pending[skip] === 0x0d && pending[skip + 1] === 0x0a) {
+            skip += 2;
+          }
+          pending = pending.subarray(skip);
+          expectedLen = -1;
+        } else {
+          break; // incomplete frame, wait for more data
+        }
+      }
     }
 
-    // Prevent buffer from growing too large — trim aggressively
-    if (streamBuffer.length > 256 * 1024) {
-      const lastBoundary = streamBuffer.lastIndexOf(boundaryMarker);
-      if (lastBoundary > 0) {
-        streamBuffer = Buffer.from(streamBuffer.subarray(lastBoundary));
-      } else {
-        // No boundary found — discard everything
-        streamBuffer = Buffer.alloc(0);
-      }
+    // Safety: if pending somehow grows too large, reset
+    if (pending.length > 512 * 1024) {
+      pending = Buffer.alloc(0);
+      expectedLen = -1;
     }
   });
 
