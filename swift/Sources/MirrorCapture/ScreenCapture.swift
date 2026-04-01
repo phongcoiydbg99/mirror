@@ -12,6 +12,8 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     private var jpegQuality: Float = 0.7
     private let boundary = "mjpeg-boundary"
     private let ciContext = CIContext()
+    private let writeQueue = DispatchQueue(label: "stdout-writer")
+    private var isWriting = false
 
     init(displayID: CGDirectDisplayID, fps: Int = 30) {
         self.displayID = displayID
@@ -60,19 +62,25 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         guard type == .screen else { return }
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
+        // Drop frame if previous write hasn't finished (prevents pipe backpressure)
+        guard !isWriting else { return }
+
         guard let jpegData = encodeJPEG(pixelBuffer: imageBuffer) else { return }
 
-        // Write MJPEG frame to stdout
+        // Write MJPEG frame to stdout on a separate queue to avoid blocking capture
         let header = "--\(boundary)\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpegData.count)\r\n\r\n"
         if let headerData = header.data(using: .utf8) {
-            // Combine into single write to avoid interleaving
             var frame = Data()
             frame.append(headerData)
             frame.append(jpegData)
             frame.append(Data("\r\n".utf8))
-            FileHandle.standardOutput.write(frame)
-            // Force flush to prevent pipe buffering
-            fflush(stdout)
+
+            isWriting = true
+            writeQueue.async { [weak self] in
+                FileHandle.standardOutput.write(frame)
+                fflush(stdout)
+                self?.isWriting = false
+            }
         }
     }
 
