@@ -115,9 +115,11 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         stream = nil
         repeatTimer?.cancel()
         repeatTimer = nil
-        if socketFD >= 0 {
-            Darwin.close(socketFD)
-            socketFD = -1
+        socketQueue.sync {
+            if socketFD >= 0 {
+                Darwin.close(socketFD)
+                socketFD = -1
+            }
         }
         fputs("Screen capture stopped\n", stderr)
     }
@@ -136,21 +138,6 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         guard type == .screen else { return }
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        captureFrameCount += 1
-
-        // Log stats every 5 seconds
-        let now = Date()
-        if now.timeIntervalSince(lastStatsTime) >= 5 {
-            let elapsed = now.timeIntervalSince(lastStatsTime)
-            let capFps = Double(captureFrameCount) / elapsed
-            let sendFps = Double(sendFrameCount) / elapsed
-            fputs("[swift] capture: \(String(format: "%.1f", capFps)) fps, sent: \(String(format: "%.1f", sendFps)) fps, dropped: \(dropFrameCount)\n", stderr)
-            captureFrameCount = 0
-            sendFrameCount = 0
-            dropFrameCount = 0
-            lastStatsTime = now
-        }
-
         guard let jpegData = encodeJPEG(pixelBuffer: imageBuffer) else { return }
 
         let header = "--\(boundary)\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpegData.count)\r\n\r\n"
@@ -161,9 +148,25 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         frame.append(jpegData)
         frame.append(Data("\r\n".utf8))
 
-        // Dispatch to serial queue for thread-safe access to lastFrameData and socketFD
+        // Dispatch to serial queue for thread-safe access to lastFrameData, socketFD, and counters
         socketQueue.async { [weak self] in
             guard let self = self else { return }
+
+            self.captureFrameCount += 1
+
+            // Log stats every 5 seconds
+            let now = Date()
+            if now.timeIntervalSince(self.lastStatsTime) >= 5 {
+                let elapsed = now.timeIntervalSince(self.lastStatsTime)
+                let capFps = Double(self.captureFrameCount) / elapsed
+                let sendFps = Double(self.sendFrameCount) / elapsed
+                fputs("[swift] capture: \(String(format: "%.1f", capFps)) fps, sent: \(String(format: "%.1f", sendFps)) fps, dropped: \(self.dropFrameCount)\n", stderr)
+                self.captureFrameCount = 0
+                self.sendFrameCount = 0
+                self.dropFrameCount = 0
+                self.lastStatsTime = now
+            }
+
             self.lastFrameData = frame
             self.lastSendTime = Date()
 
