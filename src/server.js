@@ -86,9 +86,9 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
           currentFrame = Buffer.from(pending.subarray(0, expectedLen));
           frameCount++;
 
-          // Push to WebSocket /video clients
+          // Push to WebSocket /video clients (skip if client can't keep up)
           for (const ws of videoClients) {
-            if (ws.readyState === 1) {
+            if (ws.readyState === 1 && ws.bufferedAmount < 128 * 1024) {
               ws.send(currentFrame, { binary: true });
             }
           }

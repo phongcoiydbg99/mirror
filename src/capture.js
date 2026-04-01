@@ -56,6 +56,9 @@ export async function startMirror({ width, height, landscape, mode = "virtual" }
     "--mode", mode,
   ]);
 
+  // Ensure stdout is always drained to prevent pipe backpressure blocking Swift
+  captureProc.stdout.on("pause", () => captureProc.stdout.resume());
+
   captureProc.stderr.on("data", (data) => {
     const msg = data.toString().trim();
     if (msg) console.log(`  [capture] ${msg}`);
