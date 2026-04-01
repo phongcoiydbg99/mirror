@@ -23,10 +23,13 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   let lastDataTime = Date.now();
 
   // Log FPS every 5 seconds
+  let dataEventCount = 0;
   setInterval(() => {
     const fps = (frameCount / 5).toFixed(1);
-    console.log(`[fps] ${fps} fps, frame size: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, video ws: ${videoClients.size}, stream: ${clients.size}, buf: ${pending.length}`);
+    const dps = (dataEventCount / 5).toFixed(1);
+    console.log(`[fps] ${fps} fps, data: ${dps}/s, pending: ${pending.length}, expLen: ${expectedLen}, frame: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, ws: ${videoClients.size}`);
     frameCount = 0;
+    dataEventCount = 0;
   }, 5000);
 
   mjpegInput.on("data", (chunk) => {
@@ -47,6 +50,8 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
       expectedLen = -1;
     }
     lastDataTime = now;
+
+    dataEventCount++;
 
     // Append to pending
     pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
@@ -101,8 +106,8 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
       }
     }
 
-    // Safety: if pending somehow grows too large, reset
-    if (pending.length > 512 * 1024) {
+    // Safety: if pending grows or parser seems stuck, reset
+    if (pending.length > 512 * 1024 || (pending.length > 0 && expectedLen === -1 && pending.indexOf("\r\n\r\n") === -1 && pending.length > 1024)) {
       pending = Buffer.alloc(0);
       expectedLen = -1;
     }
