@@ -18,7 +18,7 @@ class AbsoluteTouchOverlay extends StatefulWidget {
 class _AbsoluteTouchOverlayState extends State<AbsoluteTouchOverlay> {
   bool _isDragging = false;
   int _pointerCount = 0;
-  Offset? _lastScalePos;
+  Offset? _lastFocalPoint;
   double _lastScale = 1.0;
 
   Offset _relativePosition(Offset globalPos, Size size) {
@@ -53,46 +53,47 @@ class _AbsoluteTouchOverlayState extends State<AbsoluteTouchOverlay> {
               widget.inputService.send(InputMessage.rightClick(rel.dx, rel.dy));
             },
 
-            onPanStart: (details) {
-              _isDragging = true;
-              final rel = _relativePosition(details.globalPosition, size);
-              widget.inputService.send(InputMessage.drag(rel.dx, rel.dy, 'start'));
-            },
-
-            onPanUpdate: (details) {
-              if (_isDragging) {
-                final rel = _relativePosition(details.globalPosition, size);
-                widget.inputService.send(InputMessage.drag(rel.dx, rel.dy, 'move'));
-              }
-            },
-
-            onPanEnd: (details) {
-              if (_isDragging) {
-                _isDragging = false;
-                widget.inputService.send(InputMessage.drag(0, 0, 'end'));
-              }
-            },
-
+            // Use onScale* for both drag (1 finger) and pinch/scroll (2 fingers)
             onScaleStart: (details) {
-              _lastScalePos = details.focalPoint;
+              _lastFocalPoint = details.focalPoint;
               _lastScale = 1.0;
+              if (_pointerCount <= 1) {
+                _isDragging = true;
+                final rel = _relativePosition(details.focalPoint, size);
+                widget.inputService.send(InputMessage.drag(rel.dx, rel.dy, 'start'));
+              }
             },
 
             onScaleUpdate: (details) {
               final rel = _relativePosition(details.focalPoint, size);
 
-              if ((details.scale - _lastScale).abs() > 0.01) {
-                widget.inputService.send(InputMessage.pinchAt(rel.dx, rel.dy, details.scale));
-                _lastScale = details.scale;
+              if (_pointerCount >= 2) {
+                // Pinch zoom
+                if ((details.scale - _lastScale).abs() > 0.01 && details.scale != 1.0) {
+                  widget.inputService.send(InputMessage.pinchAt(rel.dx, rel.dy, details.scale));
+                  _lastScale = details.scale;
+                }
+
+                // Two-finger scroll
+                if (_lastFocalPoint != null) {
+                  final dy = details.focalPoint.dy - _lastFocalPoint!.dy;
+                  final dx = details.focalPoint.dx - _lastFocalPoint!.dx;
+                  if (dy.abs() > 1 || dx.abs() > 1) {
+                    widget.inputService.send(InputMessage.scrollAt(rel.dx, rel.dy, dx, -dy));
+                  }
+                }
+              } else if (_isDragging) {
+                // One-finger drag
+                widget.inputService.send(InputMessage.drag(rel.dx, rel.dy, 'move'));
               }
 
-              if (_pointerCount >= 2 && _lastScalePos != null) {
-                final dy = (details.focalPoint.dy - _lastScalePos!.dy);
-                final dx = (details.focalPoint.dx - _lastScalePos!.dx);
-                if (dy.abs() > 1 || dx.abs() > 1) {
-                  widget.inputService.send(InputMessage.scrollAt(rel.dx, rel.dy, dx, -dy));
-                  _lastScalePos = details.focalPoint;
-                }
+              _lastFocalPoint = details.focalPoint;
+            },
+
+            onScaleEnd: (details) {
+              if (_isDragging) {
+                _isDragging = false;
+                widget.inputService.send(InputMessage.drag(0, 0, 'end'));
               }
             },
 
