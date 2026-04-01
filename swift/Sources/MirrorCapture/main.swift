@@ -16,12 +16,13 @@ func printUsage() {
     """, stderr)
 }
 
-func parseArgs() -> (width: Int, height: Int, hiDPI: Bool, mode: String)? {
+func parseArgs() -> (width: Int, height: Int, hiDPI: Bool, mode: String, tcpPort: Int?)? {
     let args = CommandLine.arguments
     var width: Int?
     var height: Int?
     var hiDPI = true
     var mode = "virtual"
+    var tcpPort: Int? = nil
 
     var i = 1
     while i < args.count {
@@ -49,6 +50,13 @@ func parseArgs() -> (width: Int, height: Int, hiDPI: Bool, mode: String)? {
                 return nil
             }
             mode = args[i]
+        case "--tcp-port":
+            i += 1
+            guard i < args.count, let p = Int(args[i]), p > 0 else {
+                fputs("Error: --tcp-port requires a positive integer\n", stderr)
+                return nil
+            }
+            tcpPort = p
         case "--help":
             printUsage()
             Foundation.exit(0)
@@ -66,7 +74,7 @@ func parseArgs() -> (width: Int, height: Int, hiDPI: Bool, mode: String)? {
         return nil
     }
 
-    return (w, h, hiDPI, mode)
+    return (w, h, hiDPI, mode, tcpPort)
 }
 
 // Parse arguments
@@ -117,6 +125,11 @@ termSource.resume()
 
 // Start screen capture
 let capturer = ScreenCapturer(displayID: captureDisplayID, fps: 30)
+
+// Connect TCP for frame output if port specified
+if let port = config.tcpPort {
+    capturer.connectTCP(port: port)
+}
 
 // Print MJPEG boundary header for Node.js to parse
 fputs("boundary=mjpeg-boundary\n", stderr)

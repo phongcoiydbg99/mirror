@@ -12,8 +12,8 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     private var jpegQuality: Float = 0.7
     private let boundary = "mjpeg-boundary"
     private let ciContext = CIContext()
-    private let writeQueue = DispatchQueue(label: "stdout-writer")
-    private var isWriting = false
+    private var tcpSocket: OutputStream?
+    private let writeQueue = DispatchQueue(label: "frame-writer")
 
     init(displayID: CGDirectDisplayID, fps: Int = 30) {
         self.displayID = displayID
@@ -47,6 +47,21 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         fputs("Screen capture started: \(targetDisplay.width)x\(targetDisplay.height) @ \(fps)fps\n", stderr)
     }
 
+    func connectTCP(port: Int) {
+        var readStream: Unmanaged<CFReadStream>?
+        var writeStream: Unmanaged<CFWriteStream>?
+        CFStreamCreatePairWithSocketToHost(nil, "127.0.0.1" as CFString, UInt32(port), &readStream, &writeStream)
+        if let cfStream = writeStream?.takeRetainedValue() {
+            let outputStream = cfStream as OutputStream
+            outputStream.open()
+            tcpSocket = outputStream
+            fputs("TCP connected to 127.0.0.1:\(port)\n", stderr)
+        } else {
+            fputs("Failed to connect TCP to port \(port)\n", stderr)
+        }
+        readStream?.release()
+    }
+
     func stop() async {
         try? await stream?.stopCapture()
         stream = nil
@@ -61,25 +76,35 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen else { return }
         guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-
-        // Drop frame if previous write hasn't finished (prevents pipe backpressure)
-        guard !isWriting else { return }
-
         guard let jpegData = encodeJPEG(pixelBuffer: imageBuffer) else { return }
 
-        // Write MJPEG frame to stdout on a separate queue to avoid blocking capture
         let header = "--\(boundary)\r\nContent-Type: image/jpeg\r\nContent-Length: \(jpegData.count)\r\n\r\n"
-        if let headerData = header.data(using: .utf8) {
-            var frame = Data()
-            frame.append(headerData)
-            frame.append(jpegData)
-            frame.append(Data("\r\n".utf8))
+        guard let headerData = header.data(using: .utf8) else { return }
 
-            isWriting = true
-            writeQueue.async { [weak self] in
+        var frame = Data()
+        frame.append(headerData)
+        frame.append(jpegData)
+        frame.append(Data("\r\n".utf8))
+
+        if let socket = tcpSocket {
+            // Write to TCP socket (non-blocking, large buffer)
+            writeQueue.async {
+                frame.withUnsafeBytes { ptr in
+                    if let base = ptr.baseAddress?.assumingMemoryBound(to: UInt8.self) {
+                        var written = 0
+                        while written < frame.count {
+                            let result = socket.write(base.advanced(by: written), maxLength: frame.count - written)
+                            if result <= 0 { break }
+                            written += result
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback to stdout
+            writeQueue.async {
                 FileHandle.standardOutput.write(frame)
                 fflush(stdout)
-                self?.isWriting = false
             }
         }
     }

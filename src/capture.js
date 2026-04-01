@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import net from "node:net";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import { PassThrough } from "node:stream";
 import { createMirrorServer } from "./server.js";
 import { findIPhone, findUsbNetworkIP } from "./usb.js";
 import qrcodeTerminal from "qrcode-terminal";
@@ -45,19 +47,30 @@ export async function startMirror({ width, height, landscape, mode = "virtual" }
   console.log(`✔ Resolution: ${resolution.width}x${resolution.height}`);
   console.log(`✔ Mode: ${mode}`);
 
-  // 2. Swift binary path
+  // 2. Create TCP server for Swift to send MJPEG frames (avoids pipe buffer limits)
+  const mjpegStream = new PassThrough();
+  const framePort = await new Promise((resolve) => {
+    const frameSrv = net.createServer((socket) => {
+      console.log("✔ Swift capture connected via TCP");
+      socket.on("data", (chunk) => mjpegStream.write(chunk));
+      socket.on("error", () => {});
+    });
+    frameSrv.listen(0, "127.0.0.1", () => {
+      resolve(frameSrv.address().port);
+    });
+  });
+
+  // 3. Swift binary path
   const binaryPath = getSwiftBinaryPath();
 
-  // 3. Spawn Swift capture process
+  // 4. Spawn Swift capture process
   console.log("Starting screen capture...");
   const captureProc = spawn(binaryPath, [
     "--width", String(resolution.width),
     "--height", String(resolution.height),
     "--mode", mode,
+    "--tcp-port", String(framePort),
   ]);
-
-  // Ensure stdout is always drained to prevent pipe backpressure blocking Swift
-  captureProc.stdout.on("pause", () => captureProc.stdout.resume());
 
   captureProc.stderr.on("data", (data) => {
     const msg = data.toString().trim();
@@ -77,15 +90,15 @@ export async function startMirror({ width, height, landscape, mode = "virtual" }
     }
   });
 
-  // 4. Check USB network
+  // 5. Check USB network
   const usbNet = findUsbNetworkIP();
   if (usbNet) {
     console.log(`✔ USB network: ${usbNet.ip} (${usbNet.iface})`);
   }
 
-  // 5. Start HTTP + WebSocket server (bind to all interfaces for WiFi + USB)
+  // 6. Start HTTP + WebSocket server
   const server = await createMirrorServer({
-    mjpegInput: captureProc.stdout,
+    mjpegInput: mjpegStream,
     port: 8080,
     host: "0.0.0.0",
     onInput: (stdinMsg) => {
