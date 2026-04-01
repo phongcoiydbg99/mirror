@@ -17,6 +17,8 @@ class ScreenCapturer: NSObject, SCStreamOutput {
     private var repeatTimer: DispatchSourceTimer?
     private let socketQueue = DispatchQueue(label: "socket-writer")
     private var lastSendTime = Date.distantPast
+    private var lastCaptureTime = Date()
+    private var isRestarting = false
 
     init(displayID: CGDirectDisplayID, fps: Int = 30) {
         self.displayID = displayID
@@ -72,6 +74,26 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         timer.schedule(deadline: .now() + 0.1, repeating: 0.1)
         timer.setEventHandler { [weak self] in
             guard let self = self, let frame = self.lastFrameData, self.socketFD >= 0 else { return }
+
+            // Detect ScreenCaptureKit stall — restart if no new frame for 5+ seconds
+            let idleTime = Date().timeIntervalSince(self.lastCaptureTime)
+            if idleTime > 5.0 && !self.isRestarting {
+                self.isRestarting = true
+                fputs("[swift] ScreenCaptureKit stalled (\(String(format: "%.0f", idleTime))s idle), restarting stream...\n", stderr)
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    try? await self.stream?.stopCapture()
+                    self.stream = nil
+                    try? await self.start()
+                    self.socketQueue.async {
+                        self.isRestarting = false
+                        self.lastCaptureTime = Date()
+                    }
+                    fputs("[swift] Stream restarted\n", stderr)
+                }
+                return
+            }
+
             // Only re-send when capture is idle (no new frame for 100ms+)
             guard Date().timeIntervalSince(self.lastSendTime) >= 0.1 else { return }
             frame.withUnsafeBytes { ptr in
@@ -153,6 +175,7 @@ class ScreenCapturer: NSObject, SCStreamOutput {
             guard let self = self else { return }
 
             self.captureFrameCount += 1
+            self.lastCaptureTime = Date()
 
             // Log stats every 5 seconds
             let now = Date()
