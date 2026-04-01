@@ -87,13 +87,16 @@ class ScreenCapturer: NSObject, SCStreamOutput {
         frame.append(Data("\r\n".utf8))
 
         if let socket = tcpSocket {
-            // Write to TCP socket (non-blocking, large buffer)
+            // Drop frame if socket buffer is full — never block capture
+            guard socket.hasSpaceAvailable else { return }
             writeQueue.async {
                 frame.withUnsafeBytes { ptr in
                     if let base = ptr.baseAddress?.assumingMemoryBound(to: UInt8.self) {
                         var written = 0
                         while written < frame.count {
-                            let result = socket.write(base.advanced(by: written), maxLength: frame.count - written)
+                            // Check space before each chunk write
+                            guard socket.hasSpaceAvailable else { break }
+                            let result = socket.write(base.advanced(by: written), maxLength: min(frame.count - written, 32768))
                             if result <= 0 { break }
                             written += result
                         }
