@@ -131,9 +131,6 @@ if let port = config.tcpPort {
     capturer.connectTCP(port: port)
 }
 
-// Print MJPEG boundary header for Node.js to parse
-fputs("boundary=mjpeg-boundary\n", stderr)
-
 // Input injector
 let displayLayout = DisplayLayoutManager(virtualDisplayID: captureDisplayID)
 let inputInjector = InputInjector(layout: displayLayout)
@@ -142,30 +139,24 @@ let inputInjector = InputInjector(layout: displayLayout)
 let qualityController = QualityController(capturer: capturer)
 qualityController.startListening(inputInjector: inputInjector)
 
-Task {
-    do {
-        try await capturer.start()
-    } catch {
-        fputs("Capture error: \(error)\n", stderr)
-        displayManager?.destroy()
-        Foundation.exit(1)
-    }
+do {
+    try capturer.start()
+} catch {
+    fputs("Capture error: \(error)\n", stderr)
+    displayManager?.destroy()
+    Foundation.exit(1)
 }
 
 // Update signal handlers to also stop capture
 signalSource.setEventHandler {
-    Task {
-        await capturer.stop()
-        displayManager?.destroy()
-        Foundation.exit(0)
-    }
+    capturer.stop()
+    displayManager?.destroy()
+    Foundation.exit(0)
 }
 termSource.setEventHandler {
-    Task {
-        await capturer.stop()
-        displayManager?.destroy()
-        Foundation.exit(0)
-    }
+    capturer.stop()
+    displayManager?.destroy()
+    Foundation.exit(0)
 }
 
 // Keep process alive
