@@ -166,6 +166,30 @@ class ScreenCapturer {
             return
         }
         context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        // Draw cursor if it's on this display
+        let displayBounds = CGDisplayBounds(displayID)
+        let mousePos = CGEvent(source: nil)?.location ?? .zero
+        if displayBounds.contains(mousePos) {
+            let scale = Double(width) / displayBounds.width
+            let cx = (mousePos.x - displayBounds.origin.x) * scale
+            // CGContext has flipped Y (origin bottom-left), mousePos has origin top-left
+            let cy = Double(height) - (mousePos.y - displayBounds.origin.y) * scale
+
+            // Draw simple arrow cursor
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            context.setLineWidth(1.0)
+            let s = 12.0 * scale // cursor size
+            context.beginPath()
+            context.move(to: CGPoint(x: cx, y: cy))
+            context.addLine(to: CGPoint(x: cx, y: cy - s))
+            context.addLine(to: CGPoint(x: cx + s * 0.35, y: cy - s * 0.7))
+            context.addLine(to: CGPoint(x: cx + s * 0.7, y: cy - s * 0.4))
+            context.closePath()
+            context.drawPath(using: .fillStroke)
+        }
+
         CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
 
         let pts = CMTimeMake(value: frameCount, timescale: CMTimeScale(fps))
