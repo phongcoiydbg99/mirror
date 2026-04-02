@@ -16,7 +16,7 @@
       -webkit-user-select: none;
       user-select: none;
     }
-    #display {
+    #canvas {
       width: 100vw;
       height: 100vh;
       object-fit: contain;
@@ -49,34 +49,93 @@
     #fullscreen-btn:active { background: #555; }
     .hidden { display: none !important; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/broadway-player@0.1.0/Player/Broadway/Decoder.js"></script>
 </head>
 <body>
   <div id="status">Connecting...</div>
-  <img id="display" class="hidden" alt="Mirror Display">
+  <canvas id="canvas" class="hidden"></canvas>
   <button id="fullscreen-btn">Enter Full Screen</button>
 
   <script>
-    const display = document.getElementById('display');
+    const canvas = document.getElementById('canvas');
     const status = document.getElementById('status');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
-    let retryTimeout = null;
 
-    function connect() {
-      status.textContent = 'Connecting...';
-      status.classList.remove('hidden');
+    // Try to initialize Broadway H264 decoder
+    try {
+      window.decoder = new Decoder({
+        useWorker: false,
+        webgl: 'auto'
+      });
 
-      display.src = '/stream?' + Date.now();
+      window.decoder.onPictureDecoded = function(buffer, width, height, infos) {
+        if (!canvas) return;
+        canvas.width = width;
+        canvas.height = height;
 
-      display.onload = () => {
-        display.classList.remove('hidden');
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.createImageData(width, height);
+
+        // Broadway outputs YUV, convert to RGBA
+        for (let i = 0; i < width * height; i++) {
+          imageData.data[i * 4]     = buffer[i * 3];
+          imageData.data[i * 4 + 1] = buffer[i * 3 + 1];
+          imageData.data[i * 4 + 2] = buffer[i * 3 + 2];
+          imageData.data[i * 4 + 3] = 255;
+        }
+        ctx.putImageData(imageData, 0, 0);
+
+        // Show canvas once we have a decoded frame
+        canvas.classList.remove('hidden');
         status.classList.add('hidden');
       };
+    } catch(e) {
+      console.warn('[h264] Broadway decoder not available:', e);
+    }
 
-      display.onerror = () => {
-        display.classList.add('hidden');
+    function connectVideo() {
+      const wsUrl = `ws://${location.host}/video`;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = function() {
+        console.log('[h264] WebSocket connected');
+        status.textContent = 'Connected (H264)';
+      };
+
+      ws.onmessage = function(event) {
+        const data = new Uint8Array(event.data);
+        // Parse length-prefixed NAL units
+        let offset = 0;
+        while (offset + 4 <= data.length) {
+          const length = (data[offset] << 24) | (data[offset+1] << 16) | (data[offset+2] << 8) | data[offset+3];
+          offset += 4;
+          if (offset + length > data.length) break;
+
+          const nalUnit = data.subarray(offset, offset + length);
+          offset += length;
+
+          // Feed to Broadway decoder if available
+          if (window.decoder) {
+            const startCode = new Uint8Array([0, 0, 0, 1]);
+            const nalWithStartCode = new Uint8Array(4 + nalUnit.length);
+            nalWithStartCode.set(startCode);
+            nalWithStartCode.set(nalUnit, 4);
+            window.decoder.decode(nalWithStartCode);
+          }
+        }
+      };
+
+      ws.onclose = function() {
+        console.log('[h264] WebSocket closed, reconnecting...');
         status.textContent = 'Disconnected. Reconnecting...';
         status.classList.remove('hidden');
-        retryTimeout = setTimeout(connect, 2000);
+        canvas.classList.add('hidden');
+        setTimeout(connectVideo, 2000);
+      };
+
+      ws.onerror = function() {
+        ws.close();
       };
     }
 
@@ -115,7 +174,7 @@
     }
 
     preventSleep();
-    connect();
+    connectVideo();
   </script>
 </body>
 </html>
