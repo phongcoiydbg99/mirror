@@ -26,14 +26,6 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   }, 5000);
 
   mjpegInput.on("data", (chunk) => {
-    // Forward raw chunk directly to WebSocket clients (already length-prefixed)
-    for (const ws of videoClients) {
-      if (ws.readyState === 1 && ws.bufferedAmount < 256 * 1024) {
-        ws.send(chunk, { binary: true });
-      }
-    }
-
-    // Lightweight parse to cache SPS/PPS for late-joining clients
     pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
 
     while (pending.length >= 4) {
@@ -44,13 +36,26 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
 
       if (pending.length < expectedLen) break;
 
-      nalCount++;
-      const nalType = pending[0] & 0x1f;
-      if (nalType === 7) cachedSPS = Buffer.from(pending.subarray(0, expectedLen));
-      if (nalType === 8) cachedPPS = Buffer.from(pending.subarray(0, expectedLen));
-
+      const nalUnit = Buffer.from(pending.subarray(0, expectedLen));
       pending = pending.subarray(expectedLen);
       expectedLen = -1;
+      nalCount++;
+
+      // Cache SPS/PPS
+      const nalType = nalUnit[0] & 0x1f;
+      if (nalType === 7) cachedSPS = nalUnit;
+      if (nalType === 8) cachedPPS = nalUnit;
+
+      // Broadcast with length prefix
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32BE(nalUnit.length);
+      const packet = Buffer.concat([lenBuf, nalUnit]);
+
+      for (const ws of videoClients) {
+        if (ws.readyState === 1 && ws.bufferedAmount < 256 * 1024) {
+          ws.send(packet, { binary: true });
+        }
+      }
     }
 
     if (pending.length > 1024 * 1024) {
