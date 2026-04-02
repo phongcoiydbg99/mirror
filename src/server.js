@@ -10,104 +10,55 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_HTML = path.join(__dirname, "..", "client", "index.html");
 
 export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", onInput = null }) {
-  const boundary = "mjpeg-boundary";
-  const clients = new Set();
   const videoClients = new Set();
-  let lastChunk = null;
 
-  // Parse MJPEG frames using Content-Length header — no growing buffer
-  let currentFrame = null;
-  let frameCount = 0;
-  let pending = Buffer.alloc(0); // small leftover between chunks
-  let expectedLen = -1; // bytes remaining for current frame body
-  let lastDataTime = Date.now();
+  // Parse length-prefixed NAL units: [4-byte BE length][NAL data]
+  let pending = Buffer.alloc(0);
+  let expectedLen = -1;
+  let nalCount = 0;
+  let cachedSPS = null;
+  let cachedPPS = null;
 
-  // Log FPS every 5 seconds
-  let dataEventCount = 0;
   setInterval(() => {
-    const fps = (frameCount / 5).toFixed(1);
-    const dps = (dataEventCount / 5).toFixed(1);
-    console.log(`[fps] ${fps} fps, data: ${dps}/s, pending: ${pending.length}, expLen: ${expectedLen}, frame: ${currentFrame ? (currentFrame.length / 1024).toFixed(0) + 'KB' : '?'}, ws: ${videoClients.size}`);
-    frameCount = 0;
-    dataEventCount = 0;
+    const nps = (nalCount / 5).toFixed(1);
+    console.log(`[stream] ${nps} NAL/s, ws: ${videoClients.size}, sps: ${cachedSPS ? cachedSPS.length + 'B' : '?'}, pps: ${cachedPPS ? cachedPPS.length + 'B' : '?'}`);
+    nalCount = 0;
   }, 5000);
 
   mjpegInput.on("data", (chunk) => {
-    lastChunk = chunk;
-    // Forward raw stream to /stream clients (Safari MJPEG)
-    for (const res of clients) {
-      try {
-        res.write(chunk);
-      } catch {
-        clients.delete(res);
-      }
-    }
-
-    // Reset parser if stale (no data for 3+ seconds means capture paused)
-    const now = Date.now();
-    if (now - lastDataTime > 3000) {
-      pending = Buffer.alloc(0);
-      expectedLen = -1;
-    }
-    lastDataTime = now;
-
-    dataEventCount++;
-
-    // Append to pending
     pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
 
-    // Parse frames
-    while (pending.length > 0) {
+    while (pending.length >= 4) {
       if (expectedLen === -1) {
-        // Looking for header: --boundary\r\n...Content-Length: N\r\n\r\n
-        const headerEnd = pending.indexOf("\r\n\r\n");
-        if (headerEnd === -1) break; // incomplete header, wait for more data
-
-        const headerStr = pending.subarray(0, headerEnd).toString();
-        const match = headerStr.match(/Content-Length:\s*(\d+)/i);
-        if (match) {
-          expectedLen = parseInt(match[1], 10);
-          pending = pending.subarray(headerEnd + 4);
-        } else {
-          // No Content-Length — skip to next boundary
-          const nextBoundary = pending.indexOf("--" + boundary, 1);
-          if (nextBoundary > 0) {
-            pending = pending.subarray(nextBoundary);
-          } else {
-            pending = Buffer.alloc(0);
-          }
-          break;
-        }
+        expectedLen = pending.readUInt32BE(0);
+        pending = pending.subarray(4);
       }
 
-      if (expectedLen > 0) {
-        if (pending.length >= expectedLen) {
-          // Complete frame
-          currentFrame = Buffer.from(pending.subarray(0, expectedLen));
-          frameCount++;
+      if (pending.length < expectedLen) break;
 
-          // Push to WebSocket /video clients (skip if client can't keep up)
-          for (const ws of videoClients) {
-            if (ws.readyState === 1 && ws.bufferedAmount < 128 * 1024) {
-              ws.send(currentFrame, { binary: true });
-            }
-          }
+      const nalUnit = Buffer.from(pending.subarray(0, expectedLen));
+      pending = pending.subarray(expectedLen);
+      expectedLen = -1;
+      nalCount++;
 
-          // Skip frame data + trailing \r\n
-          let skip = expectedLen;
-          if (pending.length > skip + 1 && pending[skip] === 0x0d && pending[skip + 1] === 0x0a) {
-            skip += 2;
-          }
-          pending = pending.subarray(skip);
-          expectedLen = -1;
-        } else {
-          break; // incomplete frame, wait for more data
+      // Cache SPS/PPS
+      const nalType = nalUnit[0] & 0x1f;
+      if (nalType === 7) cachedSPS = nalUnit;
+      if (nalType === 8) cachedPPS = nalUnit;
+
+      // Broadcast with length prefix
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32BE(nalUnit.length);
+      const packet = Buffer.concat([lenBuf, nalUnit]);
+
+      for (const ws of videoClients) {
+        if (ws.readyState === 1 && ws.bufferedAmount < 256 * 1024) {
+          ws.send(packet, { binary: true });
         }
       }
     }
 
-    // Safety: if pending grows or parser seems stuck, reset
-    if (pending.length > 512 * 1024 || (pending.length > 0 && expectedLen === -1 && pending.indexOf("\r\n\r\n") === -1 && pending.length > 1024)) {
+    if (pending.length > 1024 * 1024) {
       pending = Buffer.alloc(0);
       expectedLen = -1;
     }
@@ -127,39 +78,6 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
       }
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(html);
-      return;
-    }
-
-    if (pathname === "/stream") {
-      res.writeHead(200, {
-        "Content-Type": `multipart/x-mixed-replace; boundary=${boundary}`,
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-      clients.add(res);
-      console.log(`[stream] client connected from ${clientIP} (total: ${clients.size})`);
-      if (lastChunk) {
-        res.write(lastChunk);
-      }
-      req.on("close", () => {
-        clients.delete(res);
-        console.log(`[stream] client disconnected from ${clientIP} (total: ${clients.size})`);
-      });
-      return;
-    }
-
-    if (pathname === "/frame") {
-      if (currentFrame) {
-        res.writeHead(200, {
-          "Content-Type": "image/jpeg",
-          "Content-Length": currentFrame.length,
-          "Cache-Control": "no-cache",
-        });
-        res.end(currentFrame);
-      } else {
-        res.writeHead(204);
-        res.end();
-      }
       return;
     }
 
@@ -200,9 +118,16 @@ export function createMirrorServer({ mjpegInput, port = 8080, host = "0.0.0.0", 
   wssVideo.on("connection", (ws, req) => {
     videoClients.add(ws);
     console.log(`[ws] video client connected from ${req.socket.remoteAddress} (total: ${videoClients.size})`);
-    // Send latest frame immediately
-    if (currentFrame) {
-      ws.send(currentFrame, { binary: true });
+    // Send cached parameter sets
+    if (cachedSPS) {
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32BE(cachedSPS.length);
+      ws.send(Buffer.concat([lenBuf, cachedSPS]), { binary: true });
+    }
+    if (cachedPPS) {
+      const lenBuf = Buffer.alloc(4);
+      lenBuf.writeUInt32BE(cachedPPS.length);
+      ws.send(Buffer.concat([lenBuf, cachedPPS]), { binary: true });
     }
     ws.on("close", () => {
       videoClients.delete(ws);
