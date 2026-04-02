@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/connection_service.dart';
 import '../services/input_service.dart';
-import '../widgets/mjpeg_viewer.dart';
+import '../widgets/h264_viewer.dart';
 import '../widgets/touch_overlay.dart';
 import '../widgets/trackpad_overlay.dart';
 import '../widgets/modifier_keys_bar.dart';
@@ -77,16 +77,16 @@ class _DisplayScreenState extends State<DisplayScreen> with WidgetsBindingObserv
               ? TrackpadOverlay(
                   inputService: cs.inputService,
                   sensitivity: 1.5,
-                  child: MjpegViewer(
-                    streamUrl: cs.streamUrl,
+                  child: H264Viewer(
+                    wsUrl: cs.videoWsUrl,
                     onError: _onStreamError,
                     fit: BoxFit.contain,
                   ),
                 )
               : AbsoluteTouchOverlay(
                   inputService: cs.inputService,
-                  child: MjpegViewer(
-                    streamUrl: cs.streamUrl,
+                  child: H264Viewer(
+                    wsUrl: cs.videoWsUrl,
                     onError: _onStreamError,
                     fit: BoxFit.contain,
                   ),

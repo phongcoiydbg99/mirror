@@ -12,6 +12,7 @@ class ConnectionService {
 
   bool get isConnected => _connected;
   String get streamUrl => 'http://$_ip:$_port/stream';
+  String get videoWsUrl => 'ws://$_ip:$_port/video';
   String? get ip => _ip;
   int? get port => _port;
 
