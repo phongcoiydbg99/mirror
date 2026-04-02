@@ -15,6 +15,8 @@ class ScreenCapturer {
     private var pixelBufferPool: CVPixelBufferPool?
     private var width: Int = 0
     private var height: Int = 0
+    private var encoding = false // prevent overlapping encodes
+    private var sendBuffer = Data(capacity: 64 * 1024) // reusable send buffer
 
     // Stats
     private var statsCaptureCount = 0
@@ -70,7 +72,7 @@ class ScreenCapturer {
         height = Int(bounds.height) / 2
 
         let poolAttrs: [String: Any] = [
-            kCVPixelBufferPoolMinimumBufferCountKey as String: 3
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 2
         ]
         let bufferAttrs: [String: Any] = [
             kCVPixelBufferWidthKey as String: width,
@@ -129,58 +131,68 @@ class ScreenCapturer {
     private func captureAndEncode() {
         guard let session = compressionSession, let pool = pixelBufferPool else { return }
 
-        guard let cgImage = CGDisplayCreateImage(displayID) else { return }
-
-        statsCaptureCount += 1
-
-        let now = Date()
-        if now.timeIntervalSince(statsLastTime) >= 5 {
-            let elapsed = now.timeIntervalSince(statsLastTime)
-            let capFps = Double(statsCaptureCount) / elapsed
-            let sendFps = Double(statsSendCount) / elapsed
-            fputs("[swift] capture: \(String(format: "%.1f", capFps)) fps, sent: \(String(format: "%.1f", sendFps)) fps, dropped: \(statsDropCount)\n", stderr)
-            statsCaptureCount = 0
-            statsSendCount = 0
-            statsDropCount = 0
-            statsLastTime = now
-        }
-
-        var pixelBuffer: CVPixelBuffer?
-        let poolStatus = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixelBuffer)
-        guard poolStatus == kCVReturnSuccess, let pixelBuffer = pixelBuffer else { return }
-
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
-        let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(
-            data: baseAddress,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else {
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+        // Skip if previous encode still in-flight — prevents memory buildup
+        guard !encoding else {
+            statsDropCount += 1
             return
         }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
 
-        let pts = CMTimeMake(value: frameCount, timescale: CMTimeScale(fps))
-        frameCount += 1
+        autoreleasepool {
+            guard let cgImage = CGDisplayCreateImage(displayID) else { return }
 
-        VTCompressionSessionEncodeFrame(
-            session,
-            imageBuffer: pixelBuffer,
-            presentationTimeStamp: pts,
-            duration: CMTimeMake(value: 1, timescale: CMTimeScale(fps)),
-            frameProperties: nil,
-            infoFlagsOut: nil
-        ) { [weak self] status, flags, sampleBuffer in
-            guard status == noErr, let sampleBuffer = sampleBuffer else { return }
-            self?.handleEncodedFrame(sampleBuffer)
+            statsCaptureCount += 1
+
+            let now = Date()
+            if now.timeIntervalSince(statsLastTime) >= 5 {
+                let elapsed = now.timeIntervalSince(statsLastTime)
+                let capFps = Double(statsCaptureCount) / elapsed
+                let sendFps = Double(statsSendCount) / elapsed
+                fputs("[swift] capture: \(String(format: "%.1f", capFps)) fps, sent: \(String(format: "%.1f", sendFps)) fps, dropped: \(statsDropCount)\n", stderr)
+                statsCaptureCount = 0
+                statsSendCount = 0
+                statsDropCount = 0
+                statsLastTime = now
+            }
+
+            var pixelBuffer: CVPixelBuffer?
+            let poolStatus = CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixelBuffer)
+            guard poolStatus == kCVReturnSuccess, let pixelBuffer = pixelBuffer else { return }
+
+            CVPixelBufferLockBaseAddress(pixelBuffer, [])
+            let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)
+            let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let context = CGContext(
+                data: baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else {
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+                return
+            }
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+
+            let pts = CMTimeMake(value: frameCount, timescale: CMTimeScale(fps))
+            frameCount += 1
+
+            encoding = true
+            VTCompressionSessionEncodeFrame(
+                session,
+                imageBuffer: pixelBuffer,
+                presentationTimeStamp: pts,
+                duration: CMTimeMake(value: 1, timescale: CMTimeScale(fps)),
+                frameProperties: nil,
+                infoFlagsOut: nil
+            ) { [weak self] status, flags, sampleBuffer in
+                defer { self?.encoding = false }
+                guard status == noErr, let sampleBuffer = sampleBuffer else { return }
+                self?.handleEncodedFrame(sampleBuffer)
+            }
         }
     }
 
@@ -233,13 +245,15 @@ class ScreenCapturer {
     }
 
     private func sendNALUnit(_ pointer: UnsafeRawPointer, size: Int) {
+        // Reuse sendBuffer to avoid per-NAL allocation
+        sendBuffer.count = 0
         var lengthBE = UInt32(size).bigEndian
-        var packet = Data(bytes: &lengthBE, count: 4)
-        packet.append(Data(bytes: pointer, count: size))
+        sendBuffer.append(Data(bytes: &lengthBE, count: 4))
+        sendBuffer.append(Data(bytes: pointer, count: size))
 
-        packet.withUnsafeBytes { ptr in
+        sendBuffer.withUnsafeBytes { ptr in
             guard let base = ptr.baseAddress else { return }
-            let result = Darwin.send(socketFD, base, packet.count, MSG_DONTWAIT)
+            let result = Darwin.send(socketFD, base, sendBuffer.count, MSG_DONTWAIT)
             if result > 0 {
                 statsSendCount += 1
             } else if errno == EAGAIN || errno == EWOULDBLOCK {
